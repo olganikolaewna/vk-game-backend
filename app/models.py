@@ -6,11 +6,13 @@ from datetime import datetime
 class User(SQLModel, table=True):
     __tablename__ = "users"
     id: Optional[int] = Field(default=None, primary_key=True)
-    vk_user_id: str = Field(index=True, unique=True)  # ID из VK
+    vk_user_id: str = Field(index=True, unique=True)
     username: str = ""
     rating: int = 0
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    
     games: List["SudokuGame"] = Relationship(back_populates="user")
+    puzzle_games: List["PuzzleGame"] = Relationship(back_populates="user")
 
 # Модель для сохранения игры в судоку
 class SudokuGame(SQLModel, table=True):
@@ -23,5 +25,25 @@ class SudokuGame(SQLModel, table=True):
     solution: str  # Полное решение (JSON строка)
     difficulty: str
     is_completed: bool = False
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    completed_at: Optional[datetime] = None
+
+# Добавьте после класса SudokuGame
+
+class PuzzleGame(SQLModel, table=True):
+    __tablename__ = "puzzle_games"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="users.id")
+    user: User = Relationship(back_populates="puzzle_games")
+    
+    content_id: str  # UUID от AI сервиса
+    image_data: str  # Base64 изображения (или URL)
+    width: int
+    height: int
+    pieces_rows: int
+    pieces_cols: int
+    difficulty: str
+    is_completed: bool = False
+    current_state: str = Field(default="[]")
     created_at: datetime = Field(default_factory=datetime.utcnow)
     completed_at: Optional[datetime] = None

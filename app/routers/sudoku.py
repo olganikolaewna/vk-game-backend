@@ -16,6 +16,10 @@ AI_SERVICE_URL = "http://91.227.68.140:8000"
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# Модель для сохранения прогресса судоку
+class SudokuSaveRequest(BaseModel):
+    current_board: List[List[int]]  # Текущее состояние сетки 9x9
+
 # --- Вспомогательная функция для получения/создания пользователя ---
 async def get_or_create_user(vk_user_id: str, session: Session) -> User:
     user = session.exec(select(User).where(User.vk_user_id == vk_user_id)).first()
@@ -40,12 +44,11 @@ async def new_sudoku_game(
     # 2. Запрашиваем новую головоломку у ИИ-сервиса
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            # ПРАВИЛЬНЫЙ ФОРМАТ ЗАПРОСА (как в примере curl)
             request_body = {
                 "game_type": "sudoku",
                 "difficulty": difficulty,
-                "player_skill": "beginner",  # или "intermediate", "expert"
-                "prompt": "",  # можно оставить пустым
+                "player_skill": "beginner",
+                "prompt": "",
                 "custom_params": {}
             }
             
@@ -58,8 +61,6 @@ async def new_sudoku_game(
             response.raise_for_status()
             data = response.json()
             
-            # Извлекаем puzzle и solution из правильной структуры ответа
-            # Ответ приходит в формате: {"content_id": "...", "game_type": "...", "data": {"puzzle": [...], "solution": [...]}}
             puzzle_grid = data["data"]["puzzle"]
             solution_grid = data["data"]["solution"]
             
@@ -90,6 +91,100 @@ async def new_sudoku_game(
         "difficulty": difficulty
     }
 
+# ========== НОВЫЕ ЭНДПОИНТЫ ДЛЯ СОХРАНЕНИЯ ПРОГРЕССА ==========
+
+@router.post("/sudoku/{game_id}/save-state")
+async def save_sudoku_state(
+    game_id: int,
+    vk_user_id: str,
+    save_data: SudokuSaveRequest,
+    session: Session = Depends(get_session)
+):
+    """
+    Сохранить текущее состояние судоку (прогресс игрока)
+    Вызывается после каждого хода или при закрытии игры
+    """
+    user = await get_or_create_user(vk_user_id, session)
+    game = session.get(SudokuGame, game_id)
+    
+    if not game or game.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Game not found")
+    
+    if game.is_completed:
+        raise HTTPException(status_code=400, detail="Game already completed")
+    
+    # Сохраняем состояние в БД
+    game.current_board = json.dumps(save_data.current_board)
+    session.add(game)
+    session.commit()
+    
+    logger.info(f"Saved sudoku state for game {game_id}, user {vk_user_id}")
+    
+    return {
+        "success": True,
+        "message": "Progress saved successfully",
+        "saved_at": datetime.utcnow().isoformat()
+    }
+
+@router.get("/sudoku/{game_id}/load-state")
+async def load_sudoku_state(
+    game_id: int,
+    vk_user_id: str,
+    session: Session = Depends(get_session)
+):
+    """
+    Загрузить сохранённое состояние судоку
+    Вызывается при открытии игры
+    """
+    user = await get_or_create_user(vk_user_id, session)
+    game = session.get(SudokuGame, game_id)
+    
+    if not game or game.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Game not found")
+    
+    # Загружаем сохранённое состояние
+    saved_board = json.loads(game.current_board) if game.current_board else None
+    puzzle = json.loads(game.puzzle)
+    solution = json.loads(game.solution)
+    
+    return {
+        "game_id": game.id,
+        "has_saved_progress": saved_board is not None,
+        "puzzle": puzzle,  # исходная задача (для отображения неизменяемых клеток)
+        "solution": solution,  # решение (для проверки)
+        "current_board": saved_board,  # прогресс игрока (null если нет сохранения)
+        "is_completed": game.is_completed,
+        "difficulty": game.difficulty,
+        "created_at": game.created_at
+    }
+
+@router.delete("/sudoku/{game_id}/clear-state")
+async def clear_sudoku_state(
+    game_id: int,
+    vk_user_id: str,
+    session: Session = Depends(get_session)
+):
+    """
+    Очистить сохранённое состояние (начать игру заново)
+    """
+    user = await get_or_create_user(vk_user_id, session)
+    game = session.get(SudokuGame, game_id)
+    
+    if not game or game.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Game not found")
+    
+    # Очищаем сохранённое состояние
+    game.current_board = None
+    session.add(game)
+    session.commit()
+    
+    return {
+        "success": True,
+        "message": "Saved progress cleared"
+    }
+
+# ========== КОНЕЦ НОВЫХ ЭНДПОИНТОВ ==========
+
 class BoardCheckRequest(BaseModel):
     current_board: List[List[int]]
 
@@ -98,7 +193,7 @@ class BoardCheckRequest(BaseModel):
 async def check_solution(
     game_id: int,
     vk_user_id: str,
-    check_data: BoardCheckRequest,  # Получаем текущую сетку из тела запроса
+    check_data: BoardCheckRequest,
     session: Session = Depends(get_session)
 ):
     # 1. Проверяем пользователя и игру
@@ -145,7 +240,6 @@ async def check_solution(
             "rating_earned": 0
         }
     else:
-        # Проверяем, есть ли ошибки
         return {
             "is_correct": False,
             "is_complete": is_complete,
@@ -153,47 +247,6 @@ async def check_solution(
             "rating_earned": 0
         }
 
-# --- Эндпоинт для получения "судоку дня" ---
-@router.get("/sudoku/daily")
-async def get_daily_sudoku():
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(f"{AI_SERVICE_URL}/api/v1/generate/sudoku/daily")
-            response.raise_for_status()
-            return response.json()
-    except Exception as e:
-        logger.error(f"Daily sudoku error: {e}")
-        raise HTTPException(status_code=503, detail="Daily sudoku unavailable")
-
-# --- Эндпоинт для проверки статуса игры (необязательно) ---
-@router.get("/sudoku/{game_id}")
-async def get_game_status(game_id: int, session: Session = Depends(get_session)):
-    game = session.get(SudokuGame, game_id)
-    if not game:
-        raise HTTPException(status_code=404, detail="Game not found")
-    return {
-        "game_id": game.id,
-        "is_completed": game.is_completed,
-        "difficulty": game.difficulty,
-        "created_at": game.created_at
-    }
-
-# app/routers/sudoku.py (добавить)
-
-@router.post("/sudoku/{game_id}/move")
-async def make_move(
-    game_id: int,
-    vk_user_id: str,
-    row: int,
-    col: int,
-    value: int,
-    session: Session = Depends(get_session)
-):
-    """Сделать ход (поставить цифру в клетку)"""
-    # Проверяем пользователя и игру
-    # Обновляем текущее состояние
-    # Возвращаем обновлённую сетку
-    pass
 
 @router.get("/sudoku/{game_id}/state")
 async def get_game_state(
@@ -201,9 +254,23 @@ async def get_game_state(
     vk_user_id: str,
     session: Session = Depends(get_session)
 ):
-    """Получить текущее состояние игры"""
-    # Для восстановления игры после перезагрузки
-    pass
+    """Получить текущее состояние игры (упрощённая версия)"""
+    user = await get_or_create_user(vk_user_id, session)
+    game = session.get(SudokuGame, game_id)
+    
+    if not game or game.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Game not found")
+    
+    saved_board = json.loads(game.current_board) if game.current_board else None
+    puzzle = json.loads(game.puzzle)
+    
+    return {
+        "game_id": game.id,
+        "puzzle": puzzle,
+        "current_board": saved_board or puzzle,  # если нет сохранения, показываем исходную задачу
+        "is_completed": game.is_completed,
+        "difficulty": game.difficulty
+    }
 
 @router.post("/sudoku/{game_id}/hint")
 async def get_hint(
@@ -212,28 +279,25 @@ async def get_hint(
     session: Session = Depends(get_session)
 ):
     """Получить подсказку (одну клетку)"""
-    # 1. Получаем пользователя (создаём если нет)
     user = await get_or_create_user(vk_user_id, session)
     
-    # 2. Получаем игру
     game = session.get(SudokuGame, game_id)
     if not game:
         raise HTTPException(status_code=404, detail="Игра не найдена")
     
-    # Проверяем, что игра принадлежит этому пользователю
     if game.user_id != user.id:
         raise HTTPException(status_code=403, detail="Это не ваша игра")
     
-    # 3. Преобразуем JSON-строки в массивы
-    import json
-    puzzle = json.loads(game.puzzle)  # исходная задача (с пустыми клетками)
-    solution = json.loads(game.solution)  # полное решение
+    puzzle = json.loads(game.puzzle)
+    solution = json.loads(game.solution)
     
-    # 4. Ищем первую пустую клетку (где в puzzle 0)
+    # Если есть сохранённый прогресс, используем его для поиска пустых клеток
+    current_board = json.loads(game.current_board) if game.current_board else puzzle
+    
+    # Ищем первую пустую клетку (где в current_board 0 и в puzzle 0)
     for row in range(9):
         for col in range(9):
-            if puzzle[row][col] == 0:  # пустая клетка
-                # Возвращаем подсказку
+            if puzzle[row][col] == 0 and current_board[row][col] == 0:
                 return {
                     "row": row,
                     "col": col,
@@ -241,12 +305,10 @@ async def get_hint(
                     "message": f"В клетке [{row+1}, {col+1}] должна быть цифра {solution[row][col]}"
                 }
     
-    # 5. Если пустых клеток нет
     return {
         "message": "В этой игре нет пустых клеток!",
         "hint_available": False
     }
-
 
 @router.post("/sudoku/{game_id}/validate")
 async def validate_move(
@@ -258,14 +320,12 @@ async def validate_move(
     session: Session = Depends(get_session)
 ):
     """Проверить, правильная ли цифра (без сохранения)"""
-    # 1. Проверяем входные данные
     if not (0 <= row <= 8 and 0 <= col <= 8):
         raise HTTPException(status_code=400, detail="Некорректные координаты (должны быть от 0 до 8)")
     
     if not (1 <= value <= 9):
         raise HTTPException(status_code=400, detail="Цифра должна быть от 1 до 9")
     
-    # 2. Получаем пользователя и игру
     user = await get_or_create_user(vk_user_id, session)
     game = session.get(SudokuGame, game_id)
     
@@ -275,8 +335,6 @@ async def validate_move(
     if game.user_id != user.id:
         raise HTTPException(status_code=403, detail="Это не ваша игра")
     
-    # 3. Проверяем, что клетка была пустой в исходной задаче
-    import json
     puzzle = json.loads(game.puzzle)
     if puzzle[row][col] != 0:
         return {
@@ -284,7 +342,6 @@ async def validate_move(
             "message": "Эта клетка была заполнена изначально, её нельзя менять"
         }
     
-    # 4. Сравниваем с решением
     solution = json.loads(game.solution)
     is_valid = (solution[row][col] == value)
     

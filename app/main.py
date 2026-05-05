@@ -5,7 +5,7 @@ from sqlmodel import Session, select
 from .db import get_session
 import httpx
 import os
-from .routers import sudoku, stats, users
+from .routers import sudoku, stats, users, puzzle
 from .db import create_db_and_tables  # <-- Импортируем функцию
 
 AI_SERVICE_URL = os.getenv("AI_SERVICE_URL", "http://91.227.68.140:8000")
@@ -42,7 +42,9 @@ def on_startup():
 
 
 app.include_router(sudoku.router, prefix="/api/v1/games", tags=["Sudoku"])
-app.include_router(stats.router)  # stats уже имеет свой префикс внутри
+app.include_router(puzzle.router, prefix="/api/v1/games", tags=["Puzzle"]) 
+app.include_router(stats.router)
+app.include_router(users.router)
 
 
 @app.get("/", tags=["Root"])

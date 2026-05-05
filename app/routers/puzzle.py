@@ -66,7 +66,7 @@ async def new_puzzle_game(
             )
             session.add(new_game)
             session.commit()
-            session.refresh(new_game) 
+            session.refresh(new_game)
             
             return {
                 "game_id": new_game.id,
