@@ -1,0 +1,12 @@
+services:
+  backend:
+    build: .
+    container_name: vk-game-backend
+    ports:
+      - "7860:7860"
+    environment:
+      - AI_SERVICE_URL=http://91.227.68.140:8000
+      - DATABASE_DIR=/app/data
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
