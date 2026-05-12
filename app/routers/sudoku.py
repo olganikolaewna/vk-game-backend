@@ -7,14 +7,18 @@ from datetime import datetime
 from typing import List, Optional
 from pydantic import BaseModel
 
-from ..db import get_session
-from ..models import User, SudokuGame
+from app.db import get_session  # обнови импорт
+from app.models import User, SudokuGame  # обнови импорт
+from app.config import settings  # новый импорт
+from ..services.adaptive_difficulty import AdaptiveDifficulty
 
-# URL нового ИИ-сервиса
-AI_SERVICE_URL = "http://91.227.68.140:8000"
+import random
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Теперь используем настройки
+AI_SERVICE_URL = settings.AI_SERVICE_URL
 
 # ============================================
 # Модели запросов/ответов
@@ -56,21 +60,50 @@ async def get_or_create_user(vk_user_id: str, session: Session) -> User:
 async def new_sudoku_game(
     vk_user_id: str,
     difficulty: str = "medium",
+    player_skill: Optional[str] = None,  # Опционально, система определит сама
     session: Session = Depends(get_session)
 ):
+    """
+    Создать новую игру Судоку.
+    
+    Логика:
+    - Если игрок новый (0 игр) → skill = "beginner"
+    - Если игрок сыграл <3 игр → skill = "beginner" (недостаточно данных)
+    - Если игрок сыграл >=3 игр → рассчитываем skill на основе win_rate
+    - Новичок может играть ЛЮБУЮ сложность (easy, medium, hard, expert)
+    """
     user = await get_or_create_user(vk_user_id, session)
     
+    # Получаем адаптированную сложность
+    from ..services.adaptive_difficulty import AdaptiveDifficulty
+    
+    adaptation = await AdaptiveDifficulty.get_adaptive_difficulty(
+        vk_user_id=vk_user_id,
+        requested_difficulty=difficulty,
+        session=session,
+        client_skill=player_skill
+    )
+    
+    adjusted_difficulty = adaptation["difficulty"]
+    detected_skill = adaptation["skill_level"]
+    
+    logger.info(f"Game creation: user={vk_user_id}, "
+                f"requested={difficulty}, "
+                f"skill={detected_skill} (source: {adaptation['skill_source']}), "
+                f"reason={adaptation['reason']}")
+    
+    # Запрашиваем у ИИ-сервиса (или мок)
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=10.0) as client:
             request_body = {
                 "game_type": "sudoku",
-                "difficulty": difficulty,
-                "player_skill": "beginner",
+                "difficulty": adjusted_difficulty,
+                "player_skill": detected_skill,  # ← Всегда передаём скилл!
                 "prompt": "",
                 "custom_params": {}
             }
             
-            logger.info(f"Sending request to AI: {request_body}")
+            logger.info(f"Sending to AI: {request_body}")
             
             response = await client.post(
                 f"{AI_SERVICE_URL}/api/v1/generate",
@@ -82,29 +115,39 @@ async def new_sudoku_game(
             puzzle_grid = data["data"]["puzzle"]
             solution_grid = data["data"]["solution"]
             
-            logger.info(f"Successfully generated sudoku with ID: {data.get('content_id')}")
-            
-    except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="AI service timeout")
     except Exception as e:
-        logger.error(f"AI service error: {e}", exc_info=True)
+        logger.error(f"AI service error: {e}")
         raise HTTPException(status_code=503, detail=f"AI service unavailable: {str(e)}")
     
+    # Сохраняем игру
     new_game = SudokuGame(
         user_id=user.id,
         puzzle=json.dumps(puzzle_grid),
         solution=json.dumps(solution_grid),
-        difficulty=difficulty,
+        difficulty=adjusted_difficulty,
         created_at=datetime.utcnow()
     )
     session.add(new_game)
     session.commit()
     session.refresh(new_game)
     
+    # Возвращаем результат
     return {
         "game_id": new_game.id,
         "puzzle": puzzle_grid,
-        "difficulty": difficulty
+        "difficulty": adjusted_difficulty,
+        "player_skill_used": detected_skill,  # ← Какой скилл был передан AI сервису
+        "adaptation": {
+            "requested": difficulty,
+            "was_adjusted": adaptation["was_adjusted"],
+            "detected_skill": detected_skill,
+            "skill_source": adaptation["skill_source"],
+            "confidence": adaptation["confidence"],
+            "reason": adaptation["reason"],
+            "skill_reason": adaptation.get("skill_reason"),
+            "games_played": adaptation["games_played"],
+            "win_rate": adaptation["win_rate"]
+        }
     }
 
 
@@ -190,6 +233,8 @@ async def make_move(
 # ИСПРАВЛЕННЫЙ ЭНДПОИНТ HINT
 # ============================================
 
+
+
 @router.post("/sudoku/{game_id}/hint")
 async def get_hint(
     game_id: int,
@@ -197,7 +242,7 @@ async def get_hint(
     session: Session = Depends(get_session)
 ):
     """
-    Получить подсказку (значение для первой пустой клетки)
+    Получить подсказку (случайная пустая клетка)
     """
     try:
         # Получаем или создаём пользователя
@@ -223,24 +268,84 @@ async def get_hint(
         solution = json.loads(game.solution)
         current_board = json.loads(game.current_board) if game.current_board else json.loads(game.puzzle)
         
-        # Ищем первую пустую клетку (где в puzzle 0 и в current_board 0)
+        # 🔍 Собираем все пустые клетки (которые должен заполнить игрок)
+        empty_cells = []
         for row in range(9):
             for col in range(9):
-                if puzzle[row][col] == 0 and current_board[row][col] == 0:
-                    return {
-                        "success": True,
-                        "row": row,
-                        "col": col,
-                        "value": solution[row][col],
-                        "message": f"Подсказка: в клетку [{row}, {col}] нужно поставить цифру {solution[row][col]}",
-                        "hint_available": True
-                    }
+                # Клетка считается пустой, если:
+                # 1. Это не изначальная клетка (puzzle[row][col] == 0)
+                # 2. Игрок её ещё не заполнил (current_board[row][col] == 0)
+                # 3. ИЛИ игрок заполнил неправильно (current_board[row][col] != solution[row][col])
+                if puzzle[row][col] == 0:
+                    if current_board[row][col] == 0:
+                        # Совсем пустая клетка
+                        empty_cells.append({
+                            "row": row,
+                            "col": col,
+                            "current_value": 0,
+                            "correct_value": solution[row][col],
+                            "reason": "empty"
+                        })
+                    elif current_board[row][col] != solution[row][col]:
+                        # Заполнено неправильно - тоже кандидат на подсказку
+                        empty_cells.append({
+                            "row": row,
+                            "col": col,
+                            "current_value": current_board[row][col],
+                            "correct_value": solution[row][col],
+                            "reason": "wrong"
+                        })
         
-        # Если пустых клеток нет
+        if not empty_cells:
+            # Проверяем, может игра уже решена?
+            is_complete = all(
+                all(current_board[row][col] != 0 for col in range(9))
+                for row in range(9)
+            )
+            if is_complete:
+                return {
+                    "success": False,
+                    "message": "Все клетки заполнены! Проверьте решение через кнопку 'Проверить'.",
+                    "hint_available": False
+                }
+            else:
+                return {
+                    "success": False,
+                    "message": "Нет доступных клеток для подсказки",
+                    "hint_available": False
+                }
+        
+        # 🎲 Выбираем случайную клетку из пустых
+        random_cell = random.choice(empty_cells)
+        row = random_cell["row"]
+        col = random_cell["col"]
+        correct_value = random_cell["correct_value"]
+        
+        # Формируем сообщение в зависимости от ситуации
+        if random_cell["reason"] == "wrong":
+            message = f"Подсказка: в клетке [{row}, {col}] сейчас стоит {random_cell['current_value']}, но правильно должно быть {correct_value}"
+        else:
+            message = f"Подсказка: в клетку [{row}, {col}] нужно поставить цифру {correct_value}"
+        
+        # ✨ Опционально: можно сразу заполнить подсказку в current_board
+        # (раскомментируй если хочешь автоматически ставить подсказку)
+        # if random_cell["reason"] == "empty":
+        #     current_board[row][col] = correct_value
+        #     game.current_board = json.dumps(current_board)
+        #     session.add(game)
+        #     session.commit()
+        #     message += " (Подсказка автоматически применена)"
+        
         return {
             "success": True,
-            "message": "В этой игре нет пустых клеток! Возможно, игра уже решена?",
-            "hint_available": False
+            "row": row,
+            "col": col,
+            "value": correct_value,
+            "current_value": random_cell.get("current_value"),
+            "was_wrong": random_cell["reason"] == "wrong",
+            "message": message,
+            "hint_available": True,
+            "total_empty_cells": len(empty_cells)
         }
         
     except HTTPException:
@@ -419,7 +524,6 @@ async def load_sudoku_state(
         "game_id": game.id,
         "has_saved_progress": saved_board is not None,
         "puzzle": puzzle,
-        "solution": solution,
         "current_board": saved_board,
         "is_completed": game.is_completed,
         "difficulty": game.difficulty,

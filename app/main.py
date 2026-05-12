@@ -2,11 +2,10 @@ from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 from sqlmodel import Session, select
-from .db import get_session
+from .db import get_session, init_db  # <-- Исправляем импорт
 import httpx
 import os
 from .routers import sudoku, stats, users, puzzle
-from .db import create_db_and_tables  # <-- Импортируем функцию
 
 AI_SERVICE_URL = os.getenv("AI_SERVICE_URL", "http://91.227.68.140:8000")
 
@@ -34,28 +33,30 @@ app.add_middleware(
 # 👇 ВАЖНО: создаём таблицы при старте приложения
 @app.on_event("startup")
 def on_startup():
-    logger.info("Создание таблиц в базе данных...")
-    create_db_and_tables()
-    logger.info("Таблицы созданы (или уже существовали)")
+    logger.info("Инициализация базы данных PostgreSQL...")
+    try:
+        init_db()  # Используем правильную функцию из db.py
+        logger.info("✅ База данных готова к работе")
+    except Exception as e:
+        logger.error(f"❌ Ошибка инициализации БД: {e}")
+        raise
 
-# Подключаем роутер
-
-
+# Подключаем роутеры
 app.include_router(sudoku.router, prefix="/api/v1/games", tags=["Sudoku"])
 app.include_router(puzzle.router, prefix="/api/v1/games", tags=["Puzzle"]) 
-app.include_router(stats.router)
-app.include_router(users.router)
+app.include_router(stats.router, prefix="/api/v1/stats", tags=["Stats"])
+app.include_router(users.router, prefix="/api/v1/users", tags=["Users"])
 
 
 @app.get("/", tags=["Root"])
 async def read_root():
     return {"message": "VK Game Platform API is running", "status": "OK"}
 
+
 @app.get("/health", tags=["Health"])
 async def health_check():
     return {"status": "healthy"}
 
-# app/main.py (дополнить)
 
 @app.get("/health/detailed")
 async def detailed_health_check(session: Session = Depends(get_session)):
@@ -68,18 +69,34 @@ async def detailed_health_check(session: Session = Depends(get_session)):
     
     # Проверка БД
     try:
-        session.exec(select(1)).first()
+        # Простой запрос для проверки подключения
+        from sqlmodel import text
+        session.exec(text("SELECT 1")).first()
         status["database"] = "ok"
-    except:
-        status["database"] = "error"
+        logger.info("✅ Database health check passed")
+    except Exception as e:
+        status["database"] = f"error: {str(e)}"
+        logger.error(f"❌ Database health check failed: {e}")
     
     # Проверка ИИ-сервиса
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=5.0) as client:
             r = await client.get(f"{AI_SERVICE_URL}/health")
             if r.status_code == 200:
                 status["ai_service"] = "ok"
-    except:
-        status["ai_service"] = "error"
+            else:
+                status["ai_service"] = f"error: HTTP {r.status_code}"
+    except httpx.TimeoutException:
+        status["ai_service"] = "error: timeout"
+    except Exception as e:
+        status["ai_service"] = f"error: {str(e)}"
     
-    return status
+    # Общий статус
+    all_ok = all(v == "ok" for v in status.values())
+    overall = "healthy" if all_ok else "degraded"
+    
+    return {
+        "status": overall,
+        "components": status,
+        "timestamp": __import__("datetime").datetime.utcnow().isoformat()
+    }

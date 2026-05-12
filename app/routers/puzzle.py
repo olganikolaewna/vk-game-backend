@@ -21,25 +21,9 @@ router = APIRouter()
 class PuzzleStateRequest(BaseModel):
     """Модель для сохранения состояния пазла"""
     pieces_state: List[Dict[str, Any]]
-    # Формат: [{"piece_id": 0, "x": 100, "y": 150, "placed": true}, ...]
-
-
-class PuzzleStateResponse(BaseModel):
-    """Модель ответа с состоянием пазла"""
-    game_id: int
-    has_saved_progress: bool
-    image_url: str
-    width: int
-    height: int
-    pieces_rows: int
-    pieces_cols: int
-    current_state: Optional[List[Dict[str, Any]]] = None
-    is_completed: bool
-    created_at: datetime
 
 
 class PuzzleNewResponse(BaseModel):
-    """Модель ответа при создании новой игры"""
     game_id: int
     content_id: str
     image_url: str
@@ -51,22 +35,8 @@ class PuzzleNewResponse(BaseModel):
 
 
 class PuzzleCompleteResponse(BaseModel):
-    """Модель ответа при завершении игры"""
     success: bool
     score_earned: int
-    message: str
-
-
-class SaveStateResponse(BaseModel):
-    """Модель ответа при сохранении состояния"""
-    success: bool
-    message: str
-    saved_at: str
-
-
-class ClearStateResponse(BaseModel):
-    """Модель ответа при очистке состояния"""
-    success: bool
     message: str
 
 
@@ -76,12 +46,18 @@ class ClearStateResponse(BaseModel):
 
 async def get_or_create_user(vk_user_id: str, session: Session) -> User:
     """Получить или создать пользователя по VK ID"""
-    user = session.exec(select(User).where(User.vk_user_id == vk_user_id)).first()
+    try:
+        vk_user_id_str = str(vk_user_id)
+    except:
+        vk_user_id_str = vk_user_id
+    
+    user = session.exec(select(User).where(User.vk_user_id == vk_user_id_str)).first()
     if not user:
-        user = User(vk_user_id=vk_user_id, username=f"Player_{vk_user_id[:5]}")
+        user = User(vk_user_id=vk_user_id_str, username=f"Player_{vk_user_id_str[:5]}")
         session.add(user)
         session.commit()
         session.refresh(user)
+        logger.info(f"Created new user with VK ID: {vk_user_id_str}")
     return user
 
 
@@ -95,13 +71,14 @@ def get_default_pieces_state(rows: int, cols: int) -> List[Dict[str, Any]]:
     positions = list(range(total_pieces))
     random.shuffle(positions)
     
-    for piece_id in range(total_pieces):
+    # Стандартные размеры кусочков (клиент сам рассчитает)
+    for idx, piece_id in enumerate(range(total_pieces)):
         pieces_state.append({
             "piece_id": piece_id,
-            "x": 0,  # начальная позиция (будет установлена клиентом)
+            "x": 0,
             "y": 0,
             "placed": False,
-            "original_position": positions[piece_id]
+            "original_index": positions[idx]  # Правильная позиция
         })
     
     return pieces_state
@@ -111,7 +88,7 @@ def get_default_pieces_state(rows: int, cols: int) -> List[Dict[str, Any]]:
 # Основные эндпоинты
 # ============================================
 
-@router.post("/puzzle/new", response_model=PuzzleNewResponse)
+@router.post("/puzzle/new")
 async def new_puzzle_game(
     vk_user_id: str,
     difficulty: str = "medium",
@@ -153,7 +130,7 @@ async def new_puzzle_game(
                 pieces_rows=pieces_rows,
                 pieces_cols=pieces_cols,
                 difficulty=difficulty,
-                current_state=json.dumps(initial_state),  # ← Инициализируем
+                current_state=json.dumps(initial_state),  # Сохраняем начальное состояние
                 created_at=datetime.utcnow()
             )
             session.add(new_game)
@@ -180,12 +157,12 @@ async def new_puzzle_game(
         logger.error(f"AI service error: {e}")
         raise HTTPException(status_code=503, detail=f"AI service error: {e.response.status_code}")
     except Exception as e:
-        logger.error(f"Puzzle generation error: {e}")
+        logger.error(f"Puzzle generation error: {e}", exc_info=True)
         raise HTTPException(status_code=503, detail=f"Puzzle service unavailable: {str(e)}")
 
 
 @router.get("/puzzle/{game_id}")
-async def get_puzzle_state(
+async def get_puzzle_info(
     game_id: int,
     vk_user_id: str,
     session: Session = Depends(get_session)
@@ -199,7 +176,7 @@ async def get_puzzle_state(
     if not game or game.user_id != user.id:
         raise HTTPException(status_code=404, detail="Game not found")
     
-    saved_state = json.loads(game.current_state) if game.current_state else None
+    saved_state = json.loads(game.current_state) if game.current_state else []
     
     return {
         "game_id": game.id,
@@ -231,7 +208,7 @@ async def load_puzzle_state(
         raise HTTPException(status_code=404, detail="Game not found")
     
     # Загружаем сохранённое состояние
-    saved_state = json.loads(game.current_state) if game.current_state else None
+    saved_state = json.loads(game.current_state) if game.current_state else []
     
     return {
         "game_id": game.id,
@@ -241,7 +218,7 @@ async def load_puzzle_state(
         "height": game.height,
         "pieces_rows": game.pieces_rows,
         "pieces_cols": game.pieces_cols,
-        "current_state": saved_state,  # ← переименовано с saved_state
+        "current_state": saved_state,
         "is_completed": game.is_completed,
         "created_at": game.created_at
     }
@@ -314,7 +291,7 @@ async def clear_puzzle_state(
     }
 
 
-@router.post("/puzzle/{game_id}/complete", response_model=PuzzleCompleteResponse)
+@router.post("/puzzle/{game_id}/complete")
 async def complete_puzzle(
     game_id: int,
     vk_user_id: str,
@@ -347,22 +324,17 @@ async def complete_puzzle(
     # Проверяем, что все кусочки на правильных местах
     all_correct = True
     pieces_per_row = game.pieces_cols
-    piece_width = game.width // game.pieces_cols
-    piece_height = game.height // game.pieces_rows
     
     for piece in saved_state:
         piece_id = piece.get("piece_id")
-        current_x = piece.get("x", -1)
-        current_y = piece.get("y", -1)
         placed = piece.get("placed", False)
+        original_index = piece.get("original_index", -1)
         
-        # Вычисляем правильные координаты для этого кусочка
-        correct_x = (piece_id % pieces_per_row) * piece_width
-        correct_y = (piece_id // pieces_per_row) * piece_height
-        
-        # Проверяем, что кусочек на месте и помечен как placed
-        if not placed or abs(current_x - correct_x) > 5 or abs(current_y - correct_y) > 5:
+        # В правильном пазле каждый кусочек должен быть на своём месте
+        # piece_id == original_index означает, что кусочек на правильной позиции
+        if not placed or piece_id != original_index:
             all_correct = False
+            logger.info(f"Piece {piece_id} not correct: placed={placed}, original_index={original_index}")
             break
     
     if not all_correct:
@@ -388,10 +360,6 @@ async def complete_puzzle(
         "message": f"Пазл решён! +{score} к рейтингу"
     }
 
-
-# ============================================
-# Дополнительный эндпоинт для получения всех игр пользователя
-# ============================================
 
 @router.get("/puzzle/user/games")
 async def get_user_puzzle_games(

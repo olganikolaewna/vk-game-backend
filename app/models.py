@@ -22,7 +22,7 @@ class SudokuGame(SQLModel, table=True):
     
     puzzle: str           # JSON: исходная задача
     solution: str         # JSON: полное решение
-    current_board: Optional[str] = Field(default=None)  # ← ДОБАВИТЬ ЭТУ СТРОКУ
+    current_board: Optional[str] = Field(default=None)  # Текущее состояние
     difficulty: str
     is_completed: bool = False
     created_at: datetime = Field(default_factory=datetime.utcnow)
@@ -36,13 +36,13 @@ class PuzzleGame(SQLModel, table=True):
     user: User = Relationship(back_populates="puzzle_games")
     
     content_id: str
-    image_data: str
+    image_data: str = Field(nullable=False)  # URL изображения
     width: int
     height: int
     pieces_rows: int
     pieces_cols: int
     difficulty: str
     is_completed: bool = False
-    current_state: str = Field(default="[]")
+    current_state: str = Field(default="[]")  # ← ЭТА КОЛОНКА УЖЕ ЕСТЬ!
     created_at: datetime = Field(default_factory=datetime.utcnow)
     completed_at: Optional[datetime] = None
