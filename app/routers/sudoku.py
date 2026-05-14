@@ -476,6 +476,10 @@ async def check_solution(
         session.add(game)
         session.commit()
         
+        # Синхронизируем рейтинг на основе последних 20 игр (после добавления очков)
+        from ..services.adaptive_difficulty import AdaptiveDifficulty
+        await AdaptiveDifficulty.sync_user_rating(vk_user_id, session)
+        
         logger.info(f"Sudoku {game_id} completed by user {vk_user_id}, earned {rating_earned} points")
         
         return {
@@ -484,6 +488,7 @@ async def check_solution(
             "message": f"🎉 Поздравляем! Судоку решена правильно! +{rating_earned} к рейтингу",
             "rating_earned": rating_earned
         }
+    
     elif is_correct and game.is_completed:
         return {
             "is_correct": True,
@@ -491,6 +496,7 @@ async def check_solution(
             "message": "Эта судоку уже была решена ранее",
             "rating_earned": 0
         }
+    
     else:
         # Находим первую ошибку для подсказки
         first_error = None
