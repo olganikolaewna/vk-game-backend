@@ -25,6 +25,7 @@ class SudokuGame(SQLModel, table=True):
     current_board: Optional[str] = Field(default=None)  # Текущее состояние
     difficulty: str
     is_completed: bool = False
+    last_move_at: Optional[datetime] = Field(default=None)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     completed_at: Optional[datetime] = None
 
