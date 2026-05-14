@@ -9,7 +9,7 @@ from ..db import get_session
 from ..models import User, SudokuGame, PuzzleGame
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/v1", tags=["Stats & Leaderboard"])
+router = APIRouter(tags=["Stats & Leaderboard"])
 
 # ========== СТАТИСТИКА ПЛАТФОРМЫ ==========
 

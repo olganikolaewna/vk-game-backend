@@ -64,11 +64,13 @@ async def new_sudoku_game(
     session: Session = Depends(get_session)
 ):
     """
-    Создать новую игру Судоку
+    Создать новую игру Судоку.
+    Теперь даёт игроку ТО, ЧТО ОН ПРОСИТ (medium/hard), если он не новичок.
+    Новичкам hard/expert заменяются на medium.
     """
     user = await get_or_create_user(vk_user_id, session)
     
-    # Получаем адаптированную сложность
+    # Получаем адаптированную сложность (анализируем скилл)
     from ..services.adaptive_difficulty import AdaptiveDifficulty
     
     adaptation = await AdaptiveDifficulty.get_adaptive_difficulty(
@@ -78,19 +80,39 @@ async def new_sudoku_game(
         client_skill=player_skill
     )
     
-    adjusted_difficulty = adaptation["difficulty"]
-    detected_skill = adaptation["skill_level"]
+    skill_level = adaptation["skill_level"]
+    recommended = adaptation["difficulty"]
     
-    logger.info(f"Creating game: user={vk_user_id}, requested={difficulty}, "
-                f"skill={detected_skill} (source: {adaptation['skill_source']})")
+    # ========== НОВАЯ ЛОГИКА (Вариант 4) ==========
+    warning = None
+    final_difficulty = difficulty  # по умолчанию даём то, что просил
     
-    # Запрашиваем у ИИ-сервиса
+    # Защита: новичкам не даём hard/expert
+    if skill_level == "beginner" and difficulty == "hard":
+        final_difficulty = "medium"
+        warning = "⚠️ Hard difficulty is locked for beginners. Starting you on Medium. Win a few games on Medium to unlock Hard!"
+    elif skill_level == "beginner" and difficulty == "expert":
+        final_difficulty = "medium"
+        warning = "⚠️ Expert difficulty is locked for beginners. Starting you on Medium. Win a few games on Medium to unlock Hard and Expert!"
+    
+    # Если игрок intermediate или advanced, даём то, что просил (даже hard)
+    # Исключение: expert даём только если игрок advanced или expert
+    if skill_level == "intermediate" and difficulty == "expert":
+        final_difficulty = "hard"
+        warning = "⚠️ Expert difficulty requires higher skill. Starting you on Hard instead."
+    
+    was_adjusted = (final_difficulty != difficulty)
+    
+    logger.info(f"User {vk_user_id} (skill={skill_level}, rating={user.rating}): "
+                f"requested={difficulty}, final={final_difficulty}, adjusted={was_adjusted}")
+    
+    # ========== Запрос к ИИ-сервису ==========
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             request_body = {
                 "game_type": "sudoku",
-                "difficulty": adjusted_difficulty,
-                "player_skill": detected_skill,
+                "difficulty": final_difficulty,
+                "player_skill": skill_level,
                 "prompt": "",
                 "custom_params": {}
             }
@@ -107,43 +129,53 @@ async def new_sudoku_game(
             puzzle_grid = data["data"]["puzzle"]
             solution_grid = data["data"]["solution"]
             
-            logger.info(f"AI service success for {adjusted_difficulty}")
+            logger.info(f"AI service success for {final_difficulty}")
             
-    except Exception as e:
-        logger.error(f"AI service error: {e}")
-        
-        # Используем простую заглушку
+    except httpx.TimeoutException:
+        logger.error("AI service timeout")
+        # Заглушка
         puzzle_grid = [[0 for _ in range(9)] for _ in range(9)]
         solution_grid = [[0 for _ in range(9)] for _ in range(9)]
-        
-        # Заполняем базовую заглушку
+        for i in range(9):
+            puzzle_grid[i][i] = i + 1
+            solution_grid[i][i] = i + 1
+    except Exception as e:
+        logger.error(f"AI service error: {e}")
+        puzzle_grid = [[0 for _ in range(9)] for _ in range(9)]
+        solution_grid = [[0 for _ in range(9)] for _ in range(9)]
         for i in range(9):
             puzzle_grid[i][i] = i + 1
             solution_grid[i][i] = i + 1
     
-    # Сохраняем игру
+    # ========== Сохраняем игру в БД ==========
     new_game = SudokuGame(
         user_id=user.id,
         puzzle=json.dumps(puzzle_grid),
         solution=json.dumps(solution_grid),
-        difficulty=adjusted_difficulty,
+        difficulty=final_difficulty,
         created_at=datetime.utcnow()
     )
     session.add(new_game)
     session.commit()
     session.refresh(new_game)
     
+    # ========== Формируем ответ ==========
     return {
         "game_id": new_game.id,
         "puzzle": puzzle_grid,
-        "difficulty": adjusted_difficulty,
-        "player_skill_used": detected_skill,
+        "difficulty": final_difficulty,
+        "player_skill_used": skill_level,
         "adaptation": {
             "requested": difficulty,
-            "was_adjusted": adaptation["was_adjusted"],
-            "detected_skill": detected_skill,
-            "games_played": adaptation["games_played"],
-            "win_rate": adaptation["win_rate"]
+            "final": final_difficulty,
+            "recommended": recommended,
+            "was_adjusted": was_adjusted,
+            "detected_skill": skill_level,
+            "skill_source": adaptation.get("skill_source", "auto_detected"),
+            "games_played": adaptation.get("games_played", 0),
+            "completed_games": adaptation.get("completed_games", 0),
+            "win_rate": adaptation.get("win_rate", 0),
+            "warning": warning
         }
     }
 
