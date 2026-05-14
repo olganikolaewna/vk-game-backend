@@ -232,6 +232,9 @@ async def make_move(
 
 
 
+import random
+from datetime import datetime
+
 @router.post("/sudoku/{game_id}/hint")
 async def get_hint(
     game_id: int,
@@ -239,7 +242,7 @@ async def get_hint(
     session: Session = Depends(get_session)
 ):
     """
-    Получить подсказку (случайная пустая клетка)
+    Получить подсказку (случайная пустая клетка + засчитывается как ход)
     """
     try:
         # Получаем или создаём пользователя
@@ -271,8 +274,7 @@ async def get_hint(
             for col in range(9):
                 # Клетка считается пустой, если:
                 # 1. Это не изначальная клетка (puzzle[row][col] == 0)
-                # 2. Игрок её ещё не заполнил (current_board[row][col] == 0)
-                # 3. ИЛИ игрок заполнил неправильно (current_board[row][col] != solution[row][col])
+                # 2. Игрок её ещё не заполнил правильно
                 if puzzle[row][col] == 0:
                     if current_board[row][col] == 0:
                         # Совсем пустая клетка
@@ -293,6 +295,8 @@ async def get_hint(
                             "reason": "wrong"
                         })
         
+        # 🎲 Если есть неправильные клетки, даём подсказку для них (приоритет)
+        # Иначе — для пустых
         if not empty_cells:
             # Проверяем, может игра уже решена?
             is_complete = all(
@@ -312,37 +316,73 @@ async def get_hint(
                     "hint_available": False
                 }
         
-        # 🎲 Выбираем случайную клетку из пустых
+        # 🎲 Выбираем случайную клетку (гарантированно разную при каждом запросе)
         random_cell = random.choice(empty_cells)
         row = random_cell["row"]
         col = random_cell["col"]
         correct_value = random_cell["correct_value"]
         
-        # Формируем сообщение в зависимости от ситуации
-        if random_cell["reason"] == "wrong":
-            message = f"Подсказка: в клетке [{row}, {col}] сейчас стоит {random_cell['current_value']}, но правильно должно быть {correct_value}"
-        else:
-            message = f"Подсказка: в клетку [{row}, {col}] нужно поставить цифру {correct_value}"
+        # 💾 СОХРАНЯЕМ ПОДСКАЗКУ КАК ХОД
+        # Обновляем доску правильным значением
+        current_board[row][col] = correct_value
+        game.current_board = json.dumps(current_board)
         
-        # ✨ Опционально: можно сразу заполнить подсказку в current_board
-        # (раскомментируй если хочешь автоматически ставить подсказку)
-        # if random_cell["reason"] == "empty":
-        #     current_board[row][col] = correct_value
-        #     game.current_board = json.dumps(current_board)
-        #     session.add(game)
-        #     session.commit()
-        #     message += " (Подсказка автоматически применена)"
+        # Обновляем время последнего хода
+        game.last_move_at = datetime.utcnow()
+        
+        # Проверяем, не завершена ли игра после подсказки
+        is_complete = all(
+            all(current_board[r][c] != 0 for c in range(9))
+            for r in range(9)
+        )
+        
+        is_win = False
+        rating_earned = 0
+        
+        if is_complete:
+            # Проверяем, всё ли правильно
+            if current_board == solution:
+                is_win = True
+                game.is_completed = True
+                game.completed_at = datetime.utcnow()
+                
+                # Начисляем очки (но меньше, чем за самостоятельное решение)
+                difficulty_scores = {"easy": 8, "medium": 15, "hard": 25}
+                rating_earned = difficulty_scores.get(game.difficulty, 10)
+                user.rating += rating_earned
+                session.add(user)
+                
+                message = f"🎉 Подсказка привела к победе! +{rating_earned} к рейтингу (с подсказкой)"
+            else:
+                message = "Все клетки заполнены, но есть ошибки. Проверьте решение!"
+        else:
+            # Формируем сообщение в зависимости от ситуации
+            if random_cell["reason"] == "wrong":
+                message = f"🔍 Подсказка: клетка [{row}, {col}] исправлена с {random_cell['current_value']} на {correct_value}"
+            else:
+                message = f"🔍 Подсказка: в клетку [{row}, {col}] поставлена цифра {correct_value}"
+        
+        # Сохраняем изменения
+        session.add(game)
+        session.commit()
+        
+        # Подсчитываем оставшиеся пустые клетки
+        remaining_empty = sum(
+            1 for r in range(9) for c in range(9)
+            if puzzle[r][c] == 0 and current_board[r][c] == 0
+        )
         
         return {
             "success": True,
             "row": row,
             "col": col,
             "value": correct_value,
-            "current_value": random_cell.get("current_value"),
             "was_wrong": random_cell["reason"] == "wrong",
             "message": message,
             "hint_available": True,
-            "total_empty_cells": len(empty_cells)
+            "remaining_empty_cells": remaining_empty,
+            "is_game_over": is_win,
+            "rating_earned": rating_earned
         }
         
     except HTTPException:
@@ -350,7 +390,6 @@ async def get_hint(
     except Exception as e:
         logger.error(f"Hint error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Ошибка при получении подсказки: {str(e)}")
-
 
 # ============================================
 # ЭНДПОИНТ ДЛЯ ПРОВЕРКИ РЕШЕНИЯ (ТОЛЬКО ЗДЕСЬ ПРОВЕРЯЕМ)
