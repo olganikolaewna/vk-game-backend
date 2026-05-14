@@ -11,8 +11,7 @@ logger = logging.getLogger(__name__)
 DIFFICULTY_LEVELS = {
     "easy": 1,
     "medium": 2,
-    "hard": 3,
-    "expert": 4
+    "hard": 3
 }
 
 LEVEL_TO_DIFFICULTY = {v: k for k, v in DIFFICULTY_LEVELS.items()}
@@ -21,15 +20,22 @@ LEVEL_TO_DIFFICULTY = {v: k for k, v in DIFFICULTY_LEVELS.items()}
 SKILL_TO_DIFFICULTY = {
     "beginner": "easy",
     "intermediate": "medium",
-    "advanced": "hard",
-    "expert": "hard"
+    "advanced": "hard"
 }
 
 class AdaptiveDifficulty:
     
     @staticmethod
-    def get_player_stats(user_id: int, session: Session) -> Dict[str, Any]:
-        """Получить полную статистику игрока"""
+    def get_player_stats(user_id: int, session: Session, recent_only: bool = True, recent_limit: int = 20) -> Dict[str, Any]:
+        """
+        Получить статистику игрока
+        
+        Параметры:
+            user_id: ID пользователя
+            session: Сессия БД
+            recent_only: Учитывать только последние N игр (по умолчанию True)
+            recent_limit: Количество последних игр для анализа (по умолчанию 20)
+        """
         sudoku_games = session.exec(
             select(SudokuGame).where(SudokuGame.user_id == user_id)
         ).all()
@@ -39,7 +45,19 @@ class AdaptiveDifficulty:
         ).all()
         
         all_games = sudoku_games + puzzle_games
-        total_games = len(all_games)
+        
+        # Сортируем по дате создания (новые сначала)
+        all_games_sorted = sorted(all_games, key=lambda g: g.created_at, reverse=True)
+        
+        # Берём только последние N игр
+        if recent_only and len(all_games_sorted) > recent_limit:
+            recent_games = all_games_sorted[:recent_limit]
+            logger.info(f"Using last {len(recent_games)} games for skill calculation (total: {len(all_games_sorted)})")
+        else:
+            recent_games = all_games_sorted
+            logger.info(f"Using all {len(recent_games)} games for skill calculation")
+        
+        total_games = len(recent_games)
         
         if total_games == 0:
             return {
@@ -50,12 +68,12 @@ class AdaptiveDifficulty:
                 "last_game_difficulty": None
             }
         
-        completed_games = [g for g in all_games if g.is_completed]
+        completed_games = [g for g in recent_games if g.is_completed]
         completed_count = len(completed_games)
-        win_rate = (completed_count / total_games) * 100
+        win_rate = (completed_count / total_games) * 100 if total_games > 0 else 0
         
         games_by_difficulty = {}
-        for game in all_games:
+        for game in recent_games:
             diff = game.difficulty
             if diff not in games_by_difficulty:
                 games_by_difficulty[diff] = {"total": 0, "completed": 0}
@@ -64,22 +82,22 @@ class AdaptiveDifficulty:
                 games_by_difficulty[diff]["completed"] += 1
         
         # Находим последнюю игру
-        last_game = None
-        all_games_sorted = sorted(all_games, key=lambda g: g.created_at, reverse=True)
-        if all_games_sorted:
-            last_game = all_games_sorted[0].difficulty
+        last_game = recent_games[0].difficulty if recent_games else None
         
         return {
             "total_games": total_games,
             "completed_games": completed_count,
             "win_rate": round(win_rate, 2),
             "games_by_difficulty": games_by_difficulty,
-            "last_game_difficulty": last_game
+            "last_game_difficulty": last_game,
+            "total_games_all_time": len(all_games)  # для информации
         }
     
     @staticmethod
     def calculate_skill_level(stats: Dict[str, Any]) -> Dict[str, Any]:
-        """Рассчитать уровень скилла на основе статистики"""
+        """
+        Рассчитать уровень скилла на основе статистики (только последние игры)
+        """
         total_games = stats.get("total_games", 0)
         win_rate = stats.get("win_rate", 0)
         games_by_diff = stats.get("games_by_difficulty", {})
@@ -95,13 +113,13 @@ class AdaptiveDifficulty:
                 "win_rate": win_rate
             }
         
-        # Если винрейт очень низкий (< 10%) — новичок
-        if win_rate < 10 and total_games >= 5:
+        # Если винрейт очень низкий (< 15%) — новичок
+        if win_rate < 15 and total_games >= 5:
             return {
                 "skill": "beginner",
                 "source": "low_win_rate",
                 "confidence": 85,
-                "reason": f"Win rate only {win_rate}% over {total_games} games",
+                "reason": f"Win rate only {win_rate}% over last {total_games} games",
                 "games_played": total_games,
                 "win_rate": win_rate
             }
@@ -113,8 +131,7 @@ class AdaptiveDifficulty:
         difficulty_scores = {
             "easy": 1,
             "medium": 2,
-            "hard": 3,
-            "expert": 4
+            "hard": 3
         }
         
         for difficulty, diff_stats in games_by_diff.items():
@@ -128,22 +145,18 @@ class AdaptiveDifficulty:
         avg_skill_score = skill_points / total_points if total_points > 0 else 0
         
         # Определение скилла на основе среднего балла
-        if avg_skill_score >= 2.8:
-            skill = "expert"
-            confidence = 85
-            reason = f"Expert player: avg score {avg_skill_score:.1f}"
-        elif avg_skill_score >= 2.0:
+        if avg_skill_score >= 2.2:
             skill = "advanced"
-            confidence = 80
-            reason = f"Advanced player: avg score {avg_skill_score:.1f}"
+            confidence = 85
+            reason = f"Advanced player: avg score {avg_skill_score:.1f} over last {total_games} games"
         elif avg_skill_score >= 1.3:
             skill = "intermediate"
-            confidence = 75
-            reason = f"Intermediate player: avg score {avg_skill_score:.1f}"
+            confidence = 80
+            reason = f"Intermediate player: avg score {avg_skill_score:.1f} over last {total_games} games"
         else:
             skill = "beginner"
             confidence = 80
-            reason = f"Beginner player: avg score {avg_skill_score:.1f}"
+            reason = f"Beginner player: avg score {avg_skill_score:.1f} over last {total_games} games"
         
         return {
             "skill": skill,
@@ -169,7 +182,7 @@ class AdaptiveDifficulty:
         
         Параметры:
             vk_user_id: ID пользователя VK
-            requested_difficulty: Запрошенная сложность (easy/medium/hard/expert)
+            requested_difficulty: Запрошенная сложность (easy/medium/hard)
             session: Сессия БД
             client_skill: Скилл от клиента (опционально)
             auto_adjust: Автоматически изменять сложность (по умолчанию True)
@@ -208,8 +221,8 @@ class AdaptiveDifficulty:
                 "win_rate": None
             }
         else:
-            # Определяем скилл автоматически
-            stats = AdaptiveDifficulty.get_player_stats(user.id, session)
+            # Определяем скилл автоматически (только последние 20 игр)
+            stats = AdaptiveDifficulty.get_player_stats(user.id, session, recent_only=True, recent_limit=20)
             skill_info = AdaptiveDifficulty.calculate_skill_level(stats)
         
         skill = skill_info["skill"]
@@ -231,14 +244,9 @@ class AdaptiveDifficulty:
             
             # Повышаем сложность, если игрок сильнее запрошенного уровня
             elif recommended_level > requested_level:
-                # Но не повышаем выше hard для новичков
-                if skill == "expert" and requested_difficulty == "hard":
-                    # Эксперт просит hard — оставляем hard
-                    pass
-                elif skill in ["advanced", "expert"] and requested_difficulty in ["easy", "medium"]:
-                    final_difficulty = recommended
-                    was_adjusted = True
-                    adjust_reason = f"Skill '{skill}' is higher than requested '{requested_difficulty}', adjusted up to '{recommended}'"
+                final_difficulty = recommended
+                was_adjusted = True
+                adjust_reason = f"Skill '{skill}' is higher than requested '{requested_difficulty}', adjusted up to '{recommended}'"
         else:
             adjust_reason = f"Auto-adjust disabled, using requested difficulty: {requested_difficulty}"
         
@@ -284,7 +292,7 @@ class AdaptiveDifficulty:
                 "games_played": 0
             }
         
-        stats = AdaptiveDifficulty.get_player_stats(user.id, session)
+        stats = AdaptiveDifficulty.get_player_stats(user.id, session, recent_only=True, recent_limit=20)
         skill_info = AdaptiveDifficulty.calculate_skill_level(stats)
         recommended = SKILL_TO_DIFFICULTY.get(skill_info["skill"], "medium")
         
@@ -294,5 +302,5 @@ class AdaptiveDifficulty:
             "reason": skill_info["reason"],
             "games_played": skill_info.get("games_played", 0),
             "win_rate": skill_info.get("win_rate", 0),
-            "avg_skill_score": skill_info.get("avg_skill_score")
+            "avg_skill_score": skill_info.get("avg_skill_score", 0)
         }
