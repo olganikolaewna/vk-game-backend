@@ -23,19 +23,11 @@ SKILL_TO_DIFFICULTY = {
     "advanced": "hard"
 }
 
-# Очки за победы для рейтинга
-RATING_SCORES = {
-    "easy": 15,
-    "medium": 30,
-    "hard": 50
-}
-
-
 class AdaptiveDifficulty:
     
     @staticmethod
-    def get_player_stats(user_id: int, session: Session, recent_only: bool = True, recent_limit: int = 20) -> Dict[str, Any]:
-        """Получить статистику игрока (только последние N игр)"""
+    def get_player_stats(user_id: int, session: Session) -> Dict[str, Any]:
+        """Получить полную статистику игрока"""
         sudoku_games = session.exec(
             select(SudokuGame).where(SudokuGame.user_id == user_id)
         ).all()
@@ -45,19 +37,7 @@ class AdaptiveDifficulty:
         ).all()
         
         all_games = sudoku_games + puzzle_games
-        
-        # Сортируем по дате создания (новые сначала)
-        all_games_sorted = sorted(all_games, key=lambda g: g.created_at, reverse=True)
-        
-        # Берём только последние N игр
-        if recent_only and len(all_games_sorted) > recent_limit:
-            recent_games = all_games_sorted[:recent_limit]
-            logger.info(f"Using last {len(recent_games)} games for skill calculation (total: {len(all_games_sorted)})")
-        else:
-            recent_games = all_games_sorted
-            logger.info(f"Using all {len(recent_games)} games for skill calculation")
-        
-        total_games = len(recent_games)
+        total_games = len(all_games)
         
         if total_games == 0:
             return {
@@ -65,16 +45,15 @@ class AdaptiveDifficulty:
                 "completed_games": 0,
                 "win_rate": 0,
                 "games_by_difficulty": {},
-                "last_game_difficulty": None,
-                "total_games_all_time": len(all_games)
+                "last_game_difficulty": None
             }
         
-        completed_games = [g for g in recent_games if g.is_completed]
+        completed_games = [g for g in all_games if g.is_completed]
         completed_count = len(completed_games)
-        win_rate = (completed_count / total_games) * 100 if total_games > 0 else 0
+        win_rate = (completed_count / total_games) * 100
         
         games_by_difficulty = {}
-        for game in recent_games:
+        for game in all_games:
             diff = game.difficulty
             if diff not in games_by_difficulty:
                 games_by_difficulty[diff] = {"total": 0, "completed": 0}
@@ -82,20 +61,23 @@ class AdaptiveDifficulty:
             if game.is_completed:
                 games_by_difficulty[diff]["completed"] += 1
         
-        last_game = recent_games[0].difficulty if recent_games else None
+        # Находим последнюю игру
+        last_game = None
+        all_games_sorted = sorted(all_games, key=lambda g: g.created_at, reverse=True)
+        if all_games_sorted:
+            last_game = all_games_sorted[0].difficulty
         
         return {
             "total_games": total_games,
             "completed_games": completed_count,
             "win_rate": round(win_rate, 2),
             "games_by_difficulty": games_by_difficulty,
-            "last_game_difficulty": last_game,
-            "total_games_all_time": len(all_games)
+            "last_game_difficulty": last_game
         }
     
     @staticmethod
     def calculate_skill_level(stats: Dict[str, Any]) -> Dict[str, Any]:
-        """Рассчитать уровень скилла на основе статистики (только последние игры)"""
+        """Рассчитать уровень скилла на основе статистики"""
         total_games = stats.get("total_games", 0)
         win_rate = stats.get("win_rate", 0)
         games_by_diff = stats.get("games_by_difficulty", {})
@@ -111,13 +93,13 @@ class AdaptiveDifficulty:
                 "win_rate": win_rate
             }
         
-        # Если винрейт очень низкий (< 15%) — новичок
-        if win_rate < 15 and total_games >= 5:
+        # Если винрейт очень низкий (< 10%) — новичок
+        if win_rate < 10 and total_games >= 5:
             return {
                 "skill": "beginner",
                 "source": "low_win_rate",
                 "confidence": 85,
-                "reason": f"Win rate only {win_rate}% over last {total_games} games",
+                "reason": f"Win rate only {win_rate}% over {total_games} games",
                 "games_played": total_games,
                 "win_rate": win_rate
             }
@@ -142,19 +124,23 @@ class AdaptiveDifficulty:
         
         avg_skill_score = skill_points / total_points if total_points > 0 else 0
         
-        # Определение скилла
-        if avg_skill_score >= 2.2:
+        # Определение скилла на основе среднего балла
+        if avg_skill_score >= 2.5:
             skill = "advanced"
             confidence = 85
-            reason = f"Advanced player: avg score {avg_skill_score:.1f} over last {total_games} games"
-        elif avg_skill_score >= 1.3:
+            reason = f"Advanced player: avg score {avg_skill_score:.1f}"
+        elif avg_skill_score >= 1.8:
             skill = "intermediate"
             confidence = 80
-            reason = f"Intermediate player: avg score {avg_skill_score:.1f} over last {total_games} games"
+            reason = f"Intermediate player: avg score {avg_skill_score:.1f}"
+        elif avg_skill_score >= 1.0:
+            skill = "beginner"
+            confidence = 75
+            reason = f"Beginner player: avg score {avg_skill_score:.1f}"
         else:
             skill = "beginner"
             confidence = 80
-            reason = f"Beginner player: avg score {avg_skill_score:.1f} over last {total_games} games"
+            reason = f"Beginner player: avg score {avg_skill_score:.1f}"
         
         return {
             "skill": skill,
@@ -168,35 +154,6 @@ class AdaptiveDifficulty:
         }
     
     @staticmethod
-    def calculate_rating_from_recent_games(user_id: int, session: Session, recent_limit: int = 20) -> int:
-        """
-        Рассчитать рейтинг на основе последних N игр (для синхронизации)
-        """
-        sudoku_games = session.exec(
-            select(SudokuGame).where(SudokuGame.user_id == user_id)
-        ).all()
-        
-        puzzle_games = session.exec(
-            select(PuzzleGame).where(PuzzleGame.user_id == user_id)
-        ).all()
-        
-        all_games = sudoku_games + puzzle_games
-        all_games_sorted = sorted(all_games, key=lambda g: g.created_at, reverse=True)
-        
-        recent_games = all_games_sorted[:recent_limit]
-        
-        if not recent_games:
-            return 0
-        
-        rating = 0
-        for game in recent_games:
-            if game.is_completed:
-                rating += RATING_SCORES.get(game.difficulty, 20)
-        
-        logger.info(f"Recalculated rating for user {user_id}: {rating} based on last {len(recent_games)} games")
-        return rating
-    
-    @staticmethod
     async def get_adaptive_difficulty(
         vk_user_id: str,
         requested_difficulty: str,
@@ -204,15 +161,26 @@ class AdaptiveDifficulty:
         client_skill: Optional[str] = None,
         auto_adjust: bool = True
     ) -> Dict[str, Any]:
-        """Основной метод - возвращает адаптированную сложность"""
+        """
+        Основной метод - возвращает адаптированную сложность
+        
+        Параметры:
+            vk_user_id: ID пользователя VK
+            requested_difficulty: Запрошенная сложность (easy/medium/hard)
+            session: Сессия БД
+            client_skill: Скилл от клиента (опционально)
+            auto_adjust: Автоматически изменять сложность (по умолчанию True)
+        """
         from ..models import User
         
         requested_difficulty = requested_difficulty.lower()
         
+        # Получаем пользователя
         user = session.exec(
             select(User).where(User.vk_user_id == str(vk_user_id))
         ).first()
         
+        # Если пользователь не существует
         if not user:
             return {
                 "difficulty": requested_difficulty,
@@ -226,6 +194,7 @@ class AdaptiveDifficulty:
                 "requested_difficulty": requested_difficulty
             }
         
+        # Если клиент прислал скилл - используем его
         if client_skill:
             skill_info = {
                 "skill": client_skill,
@@ -236,7 +205,8 @@ class AdaptiveDifficulty:
                 "win_rate": None
             }
         else:
-            stats = AdaptiveDifficulty.get_player_stats(user.id, session, recent_only=True, recent_limit=20)
+            # Определяем скилл автоматически
+            stats = AdaptiveDifficulty.get_player_stats(user.id, session)
             skill_info = AdaptiveDifficulty.calculate_skill_level(stats)
         
         skill = skill_info["skill"]
@@ -244,22 +214,29 @@ class AdaptiveDifficulty:
         was_adjusted = False
         adjust_reason = ""
         
+        # ========== АВТОМАТИЧЕСКАЯ АДАПТАЦИЯ СЛОЖНОСТИ ==========
         if auto_adjust:
             recommended = SKILL_TO_DIFFICULTY.get(skill, "medium")
             requested_level = DIFFICULTY_LEVELS.get(requested_difficulty, 2)
             recommended_level = DIFFICULTY_LEVELS.get(recommended, 2)
             
+            # Понижаем сложность, если игрок слабее запрошенного уровня
             if recommended_level < requested_level:
                 final_difficulty = recommended
                 was_adjusted = True
                 adjust_reason = f"Skill '{skill}' is lower than requested '{requested_difficulty}', adjusted down to '{recommended}'"
+            
+            # Повышаем сложность, если игрок сильнее запрошенного уровня
             elif recommended_level > requested_level:
-                final_difficulty = recommended
-                was_adjusted = True
-                adjust_reason = f"Skill '{skill}' is higher than requested '{requested_difficulty}', adjusted up to '{recommended}'"
+                # Повышаем только для опытных игроков
+                if skill in ["advanced"] and requested_difficulty in ["easy", "medium"]:
+                    final_difficulty = recommended
+                    was_adjusted = True
+                    adjust_reason = f"Skill '{skill}' is higher than requested '{requested_difficulty}', adjusted up to '{recommended}'"
         else:
             adjust_reason = f"Auto-adjust disabled, using requested difficulty: {requested_difficulty}"
         
+        # Формируем финальное сообщение
         if not adjust_reason:
             adjust_reason = f"Skill '{skill}' matches requested difficulty '{requested_difficulty}'"
         
@@ -283,7 +260,10 @@ class AdaptiveDifficulty:
         vk_user_id: str,
         session: Session
     ) -> Dict[str, Any]:
-        """Получить только рекомендуемую сложность"""
+        """
+        Получить только рекомендуемую сложность (без запроса от клиента)
+        Используется для отправки рекомендаций пользователю
+        """
         from ..models import User
         
         user = session.exec(
@@ -298,7 +278,7 @@ class AdaptiveDifficulty:
                 "games_played": 0
             }
         
-        stats = AdaptiveDifficulty.get_player_stats(user.id, session, recent_only=True, recent_limit=20)
+        stats = AdaptiveDifficulty.get_player_stats(user.id, session)
         skill_info = AdaptiveDifficulty.calculate_skill_level(stats)
         recommended = SKILL_TO_DIFFICULTY.get(skill_info["skill"], "medium")
         
@@ -308,30 +288,5 @@ class AdaptiveDifficulty:
             "reason": skill_info["reason"],
             "games_played": skill_info.get("games_played", 0),
             "win_rate": skill_info.get("win_rate", 0),
-            "avg_skill_score": skill_info.get("avg_skill_score", 0)
+            "avg_skill_score": skill_info.get("avg_skill_score")
         }
-    
-    @staticmethod
-    async def sync_user_rating(vk_user_id: str, session: Session) -> int:
-        """
-        Синхронизировать рейтинг пользователя на основе последних 20 игр
-        Вызывать после каждой победы
-        """
-        from ..models import User
-        
-        user = session.exec(
-            select(User).where(User.vk_user_id == str(vk_user_id))
-        ).first()
-        
-        if not user:
-            return 0
-        
-        new_rating = AdaptiveDifficulty.calculate_rating_from_recent_games(user.id, session, recent_limit=20)
-        
-        if user.rating != new_rating:
-            logger.info(f"Rating sync for user {vk_user_id}: {user.rating} → {new_rating}")
-            user.rating = new_rating
-            session.add(user)
-            session.commit()
-        
-        return new_rating
