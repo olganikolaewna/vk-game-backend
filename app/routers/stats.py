@@ -363,3 +363,135 @@ async def get_completed_games_stats(
     except Exception as e:
         logger.error(f"Error in completed games stats: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch completion stats")
+    
+
+    # В файле stats.py, добавьте новый эндпоинт или исправьте существующий:
+
+@router.get("/stats/user/{vk_user_id}/full")
+async def get_user_full_stats(
+    vk_user_id: str,
+    session: Session = Depends(get_session)
+):
+    """ПОЛНАЯ статистика игрока (все игры, без ограничения в 20)"""
+    try:
+        vk_user_id_str = str(vk_user_id)
+        
+        user = session.exec(
+            select(User).where(User.vk_user_id == vk_user_id_str)
+        ).first()
+        
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Получаем полную статистику
+        full_stats = AdaptiveDifficulty.get_player_full_stats(user.id, session)
+        
+        # Получаем последние 20 игр для детального отображения
+        sudoku_games = session.exec(
+            select(SudokuGame)
+            .where(SudokuGame.user_id == user.id)
+            .order_by(SudokuGame.created_at.desc())
+            .limit(20)
+        ).all()
+        
+        puzzle_games = session.exec(
+            select(PuzzleGame)
+            .where(PuzzleGame.user_id == user.id)
+            .order_by(PuzzleGame.created_at.desc())
+            .limit(20)
+        ).all()
+        
+        all_recent = sudoku_games + puzzle_games
+        all_recent.sort(key=lambda g: g.created_at, reverse=True)
+        
+        return {
+            "vk_user_id": user.vk_user_id,
+            "username": user.username,
+            "rating": user.rating,
+            "total_stats": full_stats,  # Здесь ПОЛНАЯ статистика за всё время
+            "recent_games": [  # Последние 20 игр для детального просмотра
+                {
+                    "game_id": game.id,
+                    "game_type": "sudoku" if isinstance(game, SudokuGame) else "puzzle",
+                    "difficulty": game.difficulty,
+                    "is_completed": game.is_completed,
+                    "created_at": game.created_at,
+                    "completed_at": game.completed_at
+                }
+                for game in all_recent[:20]
+            ]
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in user full stats for {vk_user_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch user stats")
+
+
+# Также исправьте существующий эндпоинт, чтобы он возвращал полную статистику:
+@router.get("/stats/user/{vk_user_id}")
+async def get_user_stats(
+    vk_user_id: str,
+    session: Session = Depends(get_session)
+):
+    """Статистика игрока (полная, все игры)"""
+    try:
+        vk_user_id_str = str(vk_user_id)
+        
+        user = session.exec(
+            select(User).where(User.vk_user_id == vk_user_id_str)
+        ).first()
+        
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Получаем ВСЕ игры пользователя (без limit)
+        sudoku_games = session.exec(
+            select(SudokuGame).where(SudokuGame.user_id == user.id)
+        ).all()
+        
+        puzzle_games = session.exec(
+            select(PuzzleGame).where(PuzzleGame.user_id == user.id)
+        ).all()
+        
+        all_games = sudoku_games + puzzle_games
+        completed = [g for g in all_games if g.is_completed]
+        
+        # Подсчёт очков по типам игр
+        sudoku_completed = [g for g in sudoku_games if g.is_completed]
+        puzzle_completed = [g for g in puzzle_games if g.is_completed]
+        
+        # Среднее время завершения (если есть completed_at)
+        avg_completion_time = None
+        games_with_time = [g for g in completed if g.completed_at and g.created_at]
+        if games_with_time:
+            total_time = sum(
+                (g.completed_at - g.created_at).total_seconds() 
+                for g in games_with_time
+            )
+            avg_completion_time = total_time / len(games_with_time) / 60  # в минутах
+        
+        return {
+            "vk_user_id": user.vk_user_id,
+            "username": user.username,
+            "rating": user.rating,
+            "total_games": len(all_games),  # ПОЛНОЕ количество игр
+            "completed_games": len(completed),
+            "win_rate": round(len(completed)/len(all_games) * 100, 2) if all_games else 0,
+            "games_by_type": {
+                "sudoku": {
+                    "total": len(sudoku_games),
+                    "completed": len(sudoku_completed)
+                },
+                "puzzle": {
+                    "total": len(puzzle_games),
+                    "completed": len(puzzle_completed)
+                }
+            },
+            "avg_completion_time_minutes": round(avg_completion_time, 1) if avg_completion_time else None
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in user stats for {vk_user_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch user stats")
