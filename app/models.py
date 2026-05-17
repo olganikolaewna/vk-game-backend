@@ -8,6 +8,7 @@ class User(SQLModel, table=True):
     vk_user_id: str = Field(index=True, unique=True)
     username: str = ""
     rating: int = 0
+    skill_level: str = Field(default="beginner")
     created_at: datetime = Field(default_factory=datetime.utcnow)
     
     games: List["SudokuGame"] = Relationship(back_populates="user")

@@ -296,6 +296,118 @@ async def get_completed_games_stats(
     except Exception as e:
         logger.error(f"Error in completed games stats: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch completion stats")
+
+
+@router.get("/stats/user/{vk_user_id}")
+async def get_user_stats(
+    vk_user_id: str,
+    session: Session = Depends(get_session)
+):
+    """
+    Статистика игрока для фронтенда
+    """
+    try:
+        user = session.exec(
+            select(User).where(User.vk_user_id == str(vk_user_id))
+        ).first()
+        
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Полная статистика (все игры)
+        full_stats = AdaptiveDifficulty.get_user_full_stats(user.id, session)
+        
+        # Статистика по последним 15 играм (для отображения текущего win-rate)
+        recent_games = AdaptiveDifficulty.get_relevant_games(user.id, session, limit=15)
+        recent_stats = AdaptiveDifficulty.calculate_win_rate(recent_games)
+        
+        # Информация о прогрессе
+        skill_info = {
+            "current": user.skill_level,
+            "next_level": None,
+            "progress": {}
+        }
+        
+        # Информация о необходимом для повышения
+        if user.skill_level == "beginner":
+            skill_info["next_level"] = "intermediate"
+            easy_games = [g for g in recent_games if g.difficulty == "easy"]
+            skill_info["progress"] = {
+                "need_games": 10,
+                "current_games": len(easy_games),
+                "need_win_rate": 70,
+                "current_win_rate": AdaptiveDifficulty.calculate_win_rate(easy_games)["win_rate"]
+            }
+        elif user.skill_level == "intermediate":
+            skill_info["next_level"] = "advanced"
+            medium_games = [g for g in recent_games if g.difficulty == "medium"]
+            skill_info["progress"] = {
+                "need_games": 10,
+                "current_games": len(medium_games),
+                "need_win_rate": 60,
+                "current_win_rate": AdaptiveDifficulty.calculate_win_rate(medium_games)["win_rate"]
+            }
+        
+        return {
+            "vk_user_id": user.vk_user_id,
+            "username": user.username,
+            "rating": user.rating,
+            "skill_level": user.skill_level,
+            # Полная статистика (все игры за всё время)
+            "total_games_all_time": full_stats["total_games"],
+            "total_completed_all_time": full_stats["completed_games"],
+            "total_win_rate_all_time": full_stats["win_rate"],
+            # Статистика по последним 15 играм (текущая форма)
+            "recent_games_count": recent_stats["total_games"],
+            "recent_win_rate": recent_stats["win_rate"],
+            "recent_completed": recent_stats["completed_games"],
+            "stats_by_difficulty_recent": recent_stats["stats_by_difficulty"],
+            # Информация о прогрессе
+            "promotion_info": skill_info,
+            # Доступные сложности
+            "allowed_difficulties": ["easy"] if user.skill_level == "beginner" 
+                                    else (["easy", "medium"] if user.skill_level == "intermediate" 
+                                    else ["easy", "medium", "hard"])
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in user stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/game/completed/{game_id}")
+async def on_game_completed(
+    game_id: int,
+    game_type: str,  # "sudoku" or "puzzle"
+    session: Session = Depends(get_session)
+):
+    """
+    Вызывается когда игрок завершил игру
+    Обновляет уровень навыка
+    """
+    try:
+        # Находим игру
+        if game_type == "sudoku":
+            game = session.get(SudokuGame, game_id)
+        else:
+            game = session.get(PuzzleGame, game_id)
+        
+        if not game or not game.is_completed:
+            return {"status": "ignored", "reason": "Game not found or not completed"}
+        
+        # Обновляем уровень навыка
+        skill_update = AdaptiveDifficulty.update_skill_level(game.user_id, session)
+        
+        return {
+            "status": "updated",
+            "skill_update": skill_update
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in game completed callback: {e}")
+        return {"status": "error", "reason": str(e)}
     
 
    
