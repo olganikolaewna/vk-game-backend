@@ -58,6 +58,8 @@ async def get_or_create_user(vk_user_id: str, session: Session) -> User:
 
 # app/routers/sudoku.py - исправленный эндпоинт new_sudoku_game
 
+# app/routers/sudoku.py - замените эндпоинт new_sudoku_game
+
 @router.post("/sudoku/new")
 async def new_sudoku_game(
     vk_user_id: str,
@@ -67,6 +69,7 @@ async def new_sudoku_game(
 ):
     """
     Создать новую игру Судоку
+    🔥 Автоматически переводит на разрешенный уровень
     """
     user = await get_or_create_user(vk_user_id, session)
     
@@ -80,26 +83,23 @@ async def new_sudoku_game(
         client_skill=player_skill
     )
     
-    adjusted_difficulty = adaptation["difficulty"]
-    was_adjusted = adaptation.get("was_adjusted", False)
-    skill_level = adaptation.get("skill_level", "beginner")
+    # 🔥 Берем итоговую сложность (уже адаптированную)
+    final_difficulty = adaptation["difficulty"]
+    was_adjusted = adaptation["was_adjusted"]
+    skill_level = adaptation["skill_level"]
+    allowed_difficulties = adaptation.get("allowed_difficulties", ["easy"])
     
-    # 🔥 Упрощенная проверка - без promotion_info
     if was_adjusted:
-        logger.warning(f"User {vk_user_id} (skill: {skill_level}) attempted to create {difficulty} game")
-        raise HTTPException(
-            status_code=403,
-            detail=f"Ваш текущий уровень ({skill_level}) не позволяет играть на сложности {difficulty}. Доступно: {', '.join(adaptation.get('allowed_difficulties', ['easy']))}"
-        )
+        logger.info(f"User {vk_user_id} (skill: {skill_level}) requested {difficulty}, auto-adjusted to {final_difficulty}")
     
-    logger.info(f"Creating game: user={vk_user_id}, difficulty={adjusted_difficulty}, skill={skill_level}")
+    logger.info(f"Creating game: user={vk_user_id}, difficulty={final_difficulty}, skill={skill_level}")
     
     # Запрашиваем у ИИ-сервиса
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             request_body = {
                 "game_type": "sudoku",
-                "difficulty": adjusted_difficulty,
+                "difficulty": final_difficulty,
                 "player_skill": skill_level,
                 "prompt": "",
                 "custom_params": {}
@@ -129,7 +129,7 @@ async def new_sudoku_game(
         user_id=user.id,
         puzzle=json.dumps(puzzle_grid),
         solution=json.dumps(solution_grid),
-        difficulty=adjusted_difficulty,
+        difficulty=final_difficulty,
         created_at=datetime.utcnow()
     )
     session.add(new_game)
@@ -139,14 +139,18 @@ async def new_sudoku_game(
     return {
         "game_id": new_game.id,
         "puzzle": puzzle_grid,
-        "difficulty": adjusted_difficulty,
+        "difficulty": final_difficulty,
         "player_skill_used": skill_level,
+        "was_adjusted": was_adjusted,
+        "requested_difficulty": difficulty if was_adjusted else None,
+        "allowed_difficulties": allowed_difficulties,
         "adaptation": {
-            "requested": difficulty,
-            "was_adjusted": was_adjusted,
-            "detected_skill": skill_level,
+            "skill_level": skill_level,
             "games_played": adaptation.get("games_played", 0),
-            "win_rate": adaptation.get("win_rate", 0)
+            "win_rate": adaptation.get("win_rate", 0),
+            "games_needed_for_next_level": adaptation.get("games_needed", 0),
+            "required_win_rate": adaptation.get("required_win_rate", 0),
+            "message": f"Автоматически изменено с {difficulty} на {final_difficulty}" if was_adjusted else f"Игра создана на уровне {final_difficulty}"
         }
     }
 

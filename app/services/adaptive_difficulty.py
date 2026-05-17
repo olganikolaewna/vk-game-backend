@@ -15,104 +15,36 @@ DIFFICULTY_LEVELS = {
     "hard": 3
 }
 
-# 🔥 НОВЫЕ ПОРОГИ ДЛЯ ПОВЫШЕНИЯ (более быстрый прогресс)
+# Пороги для повышения уровня (6 побед из 10 = 60%)
 PROMOTION_THRESHOLDS = {
     "beginner": {
-        "required_difficulty": "easy",
-        "min_games": 6,           # 🔥 Было 10, стало 6
-        "min_win_rate": 60,       # 🔥 Было 70, стало 60
-        "next_skill": "intermediate"
+        "min_games": 6,
+        "min_win_rate": 60,
+        "next_skill": "intermediate",
+        "max_difficulty": "easy"
     },
     "intermediate": {
-        "required_difficulty": "medium",
-        "min_games": 6,           # 🔥 Было 10, стало 6
-        "min_win_rate": 60,       # 🔥 Было 60, осталось 60
-        "next_skill": "advanced"
+        "min_games": 6,
+        "min_win_rate": 60,
+        "next_skill": "advanced",
+        "max_difficulty": "medium"
+    },
+    "advanced": {
+        "min_games": 0,
+        "min_win_rate": 0,
+        "next_skill": None,
+        "max_difficulty": "hard"
     }
 }
 
 # Доступные сложности для каждого скилла
 SKILL_TO_ALLOWED_DIFFICULTIES = {
-    "beginner": ["easy"],                    # Только easy
-    "intermediate": ["easy", "medium"],      # easy и medium
-    "advanced": ["easy", "medium", "hard"]   # любые
-}
-
-SKILL_TO_RECOMMENDED = {
-    "beginner": "easy",
-    "intermediate": "medium",
-    "advanced": "hard"
+    "beginner": ["easy"],
+    "intermediate": ["easy", "medium"],
+    "advanced": ["easy", "medium", "hard"]
 }
 
 class AdaptiveDifficulty:
-    
-    @staticmethod
-    def get_player_stats_for_skill(user_id: int, session: Session) -> Dict[str, Any]:
-        """
-        🔥 ФИКС: Статистика ТОЛЬКО для определения скилла
-        Считаем ТОЛЬКО игры на разрешенных сложностях для текущего уровня
-        """
-        # Получаем ВСЕ игры пользователя
-        sudoku_games = session.exec(
-            select(SudokuGame).where(SudokuGame.user_id == user_id)
-        ).all()
-        puzzle_games = session.exec(
-            select(PuzzleGame).where(PuzzleGame.user_id == user_id)
-        ).all()
-        all_games = sudoku_games + puzzle_games
-        
-        if not all_games:
-            return {
-                "skill": "beginner",
-                "games_on_easy": 0,
-                "wins_on_easy": 0,
-                "win_rate_on_easy": 0,
-                "games_on_medium": 0,
-                "wins_on_medium": 0,
-                "win_rate_on_medium": 0,
-                "total_games_all": 0
-            }
-        
-        # 🔥 Считаем отдельно по каждой сложности (ВСЕ игры, без фильтрации)
-        easy_games = [g for g in all_games if g.difficulty == "easy"]
-        medium_games = [g for g in all_games if g.difficulty == "medium"]
-        hard_games = [g for g in all_games if g.difficulty == "hard"]
-        
-        easy_wins = sum(1 for g in easy_games if g.is_completed)
-        medium_wins = sum(1 for g in medium_games if g.is_completed)
-        
-        easy_win_rate = (easy_wins / len(easy_games) * 100) if easy_games else 0
-        medium_win_rate = (medium_wins / len(medium_games) * 100) if medium_games else 0
-        
-        # 🔥 ОПРЕДЕЛЕНИЕ СКИЛЛА (только на основе easy и medium)
-        # Начинаем с beginner
-        skill = "beginner"
-        
-        # Проверяем возможность повышения до intermediate (на основе easy)
-        if len(easy_games) >= PROMOTION_THRESHOLDS["beginner"]["min_games"] and easy_win_rate >= PROMOTION_THRESHOLDS["beginner"]["min_win_rate"]:
-            skill = "intermediate"
-        
-        # Проверяем возможность повышения до advanced (на основе medium)
-        if skill == "intermediate":
-            if len(medium_games) >= PROMOTION_THRESHOLDS["intermediate"]["min_games"] and medium_win_rate >= PROMOTION_THRESHOLDS["intermediate"]["min_win_rate"]:
-                skill = "advanced"
-        
-        logger.info(f"Player {user_id}: easy={len(easy_games)}/{easy_wins} ({easy_win_rate:.1f}%), "
-                   f"medium={len(medium_games)}/{medium_wins} ({medium_win_rate:.1f}%), skill={skill}")
-        
-        return {
-            "skill": skill,
-            "games_on_easy": len(easy_games),
-            "wins_on_easy": easy_wins,
-            "win_rate_on_easy": round(easy_win_rate, 1),
-            "games_on_medium": len(medium_games),
-            "wins_on_medium": medium_wins,
-            "win_rate_on_medium": round(medium_win_rate, 1),
-            "games_on_hard": len(hard_games),
-            "total_games_all": len(all_games),
-            "easy_games_needed": max(0, PROMOTION_THRESHOLDS["beginner"]["min_games"] - len(easy_games)),
-            "medium_games_needed": max(0, PROMOTION_THRESHOLDS["intermediate"]["min_games"] - len(medium_games))
-        }
     
     @staticmethod
     async def get_adaptive_difficulty(
@@ -123,12 +55,120 @@ class AdaptiveDifficulty:
         auto_adjust: bool = True
     ) -> Dict[str, Any]:
         """
-        🔥 ОСНОВНОЙ МЕТОД
-        Если игрок пытается играть на запрещенной сложности - возвращаем ошибку через was_adjusted
+        🔥 Автоматически переводит игрока на разрешенный уровень
         """
         from ..models import User
         
         requested_difficulty = requested_difficulty.lower()
+        
+        # Получаем пользователя
+        user = session.exec(
+            select(User).where(User.vk_user_id == str(vk_user_id))
+        ).first()
+        
+        if not user:
+            # Новый игрок - только easy
+            final_difficulty = "easy" if requested_difficulty != "easy" else "easy"
+            return {
+                "difficulty": final_difficulty,
+                "was_adjusted": requested_difficulty != "easy",
+                "skill_level": "beginner",
+                "allowed_difficulties": ["easy"],
+                "games_played": 0,
+                "win_rate": 0,
+                "games_needed": 6,
+                "required_win_rate": 60
+            }
+        
+        # Получаем статистику игрока
+        sudoku_games = session.exec(
+            select(SudokuGame).where(SudokuGame.user_id == user.id)
+        ).all()
+        
+        # Анализируем игры по сложностям
+        easy_games = [g for g in sudoku_games if g.difficulty == "easy"]
+        medium_games = [g for g in sudoku_games if g.difficulty == "medium"]
+        
+        easy_wins = sum(1 for g in easy_games if g.is_completed)
+        easy_total = len(easy_games)
+        easy_win_rate = (easy_wins / easy_total * 100) if easy_total > 0 else 0
+        
+        medium_wins = sum(1 for g in medium_games if g.is_completed)
+        medium_total = len(medium_games)
+        medium_win_rate = (medium_wins / medium_total * 100) if medium_total > 0 else 0
+        
+        # 🔥 Определяем скилл игрока
+        skill = "beginner"
+        
+        # Проверяем, может ли игрок быть intermediate
+        if easy_total >= PROMOTION_THRESHOLDS["beginner"]["min_games"] and easy_win_rate >= PROMOTION_THRESHOLDS["beginner"]["min_win_rate"]:
+            skill = "intermediate"
+        
+        # Проверяем, может ли игрок быть advanced
+        if skill == "intermediate":
+            if medium_total >= PROMOTION_THRESHOLDS["intermediate"]["min_games"] and medium_win_rate >= PROMOTION_THRESHOLDS["intermediate"]["min_win_rate"]:
+                skill = "advanced"
+        
+        # 🔥 Получаем максимальную доступную сложность
+        max_difficulty = PROMOTION_THRESHOLDS[skill]["max_difficulty"]
+        allowed_difficulties = SKILL_TO_ALLOWED_DIFFICULTIES[skill]
+        
+        # 🔥 Автоматически выбираем сложность
+        final_difficulty = requested_difficulty
+        was_adjusted = False
+        
+        # Если запрошенная сложность выше максимальной - понижаем
+        if DIFFICULTY_LEVELS[requested_difficulty] > DIFFICULTY_LEVELS[max_difficulty]:
+            final_difficulty = max_difficulty
+            was_adjusted = True
+        # Если запрошенная сложность ниже - оставляем (игрок может играть на легких уровнях)
+        
+        # Подсчитываем, сколько еще нужно игр для повышения
+        games_needed = 0
+        required_win_rate = 0
+        
+        if skill == "beginner":
+            games_needed = max(0, PROMOTION_THRESHOLDS["beginner"]["min_games"] - easy_total)
+            required_win_rate = PROMOTION_THRESHOLDS["beginner"]["min_win_rate"]
+            current_win_rate = easy_win_rate
+        elif skill == "intermediate":
+            games_needed = max(0, PROMOTION_THRESHOLDS["intermediate"]["min_games"] - medium_total)
+            required_win_rate = PROMOTION_THRESHOLDS["intermediate"]["min_win_rate"]
+            current_win_rate = medium_win_rate
+        else:
+            games_needed = 0
+            required_win_rate = 0
+            current_win_rate = 0
+        
+        logger.info(f"Player {vk_user_id}: skill={skill}, requested={requested_difficulty}, final={final_difficulty}, adjusted={was_adjusted}")
+        
+        return {
+            "difficulty": final_difficulty,
+            "was_adjusted": was_adjusted,
+            "skill_level": skill,
+            "allowed_difficulties": allowed_difficulties,
+            "games_played": easy_total if skill == "beginner" else medium_total,
+            "win_rate": round(current_win_rate, 1),
+            "games_needed": games_needed,
+            "required_win_rate": required_win_rate,
+            "max_difficulty": max_difficulty,
+            "details": {
+                "easy_games": easy_total,
+                "easy_wins": easy_wins,
+                "easy_win_rate": round(easy_win_rate, 1),
+                "medium_games": medium_total,
+                "medium_wins": medium_wins,
+                "medium_win_rate": round(medium_win_rate, 1)
+            }
+        }
+    
+    @staticmethod
+    async def get_recommended_difficulty(
+        vk_user_id: str,
+        session: Session
+    ) -> Dict[str, Any]:
+        """Получить рекомендуемую сложность"""
+        from ..models import User
         
         user = session.exec(
             select(User).where(User.vk_user_id == str(vk_user_id))
@@ -136,49 +176,54 @@ class AdaptiveDifficulty:
         
         if not user:
             return {
-                "difficulty": "easy",
-                "was_adjusted": True if requested_difficulty != "easy" else False,
+                "recommended_difficulty": "easy",
                 "skill_level": "beginner",
                 "allowed_difficulties": ["easy"],
                 "games_played": 0,
-                "win_rate": 0,
-                "reason": "New user"
+                "win_rate": 0
             }
         
-        # Получаем статистику и скилл
-        stats = AdaptiveDifficulty.get_player_stats_for_skill(user.id, session)
-        skill = stats["skill"]
+        # Получаем статистику
+        sudoku_games = session.exec(
+            select(SudokuGame).where(SudokuGame.user_id == user.id)
+        ).all()
         
-        # Проверяем, разрешена ли запрошенная сложность
-        allowed = SKILL_TO_ALLOWED_DIFFICULTIES.get(skill, ["easy"])
-        is_allowed = requested_difficulty in allowed
+        easy_games = [g for g in sudoku_games if g.difficulty == "easy"]
+        easy_wins = sum(1 for g in easy_games if g.is_completed)
+        easy_total = len(easy_games)
+        easy_win_rate = (easy_wins / easy_total * 100) if easy_total > 0 else 0
         
-        if not is_allowed and auto_adjust:
-            # 🔥 ИГРА НЕ БУДЕТ СОЗДАНА! Возвращаем was_adjusted=True
-            return {
-                "difficulty": requested_difficulty,  # Запрошенная, но недоступная
-                "was_adjusted": True,  # 🔥 Сигнал для фронтенда - игра не будет создана
-                "skill_level": skill,
-                "allowed_difficulties": allowed,
-                "games_played": stats["games_on_easy"],
-                "win_rate": stats["win_rate_on_easy"],
-                "games_needed": stats["easy_games_needed"] if skill == "beginner" else stats["medium_games_needed"],
-                "required_win_rate": PROMOTION_THRESHOLDS["beginner"]["min_win_rate"] if skill == "beginner" else PROMOTION_THRESHOLDS["intermediate"]["min_win_rate"],
-                "reason": f"Skill '{skill}' cannot play '{requested_difficulty}'. Need {stats['easy_games_needed'] if skill == 'beginner' else stats['medium_games_needed']} more games on {SKILL_TO_RECOMMENDED[skill]} with {PROMOTION_THRESHOLDS[skill]['min_win_rate']}% win rate"
-            }
+        medium_games = [g for g in sudoku_games if g.difficulty == "medium"]
+        medium_wins = sum(1 for g in medium_games if g.is_completed)
+        medium_total = len(medium_games)
+        medium_win_rate = (medium_wins / medium_total * 100) if medium_total > 0 else 0
         
-        # Игрок может играть на этой сложности
+        # Определяем скилл
+        if easy_total >= 6 and easy_win_rate >= 60:
+            if medium_total >= 6 and medium_win_rate >= 60:
+                skill = "advanced"
+                recommended = "hard"
+                allowed = ["easy", "medium", "hard"]
+            else:
+                skill = "intermediate"
+                recommended = "medium"
+                allowed = ["easy", "medium"]
+        else:
+            skill = "beginner"
+            recommended = "easy"
+            allowed = ["easy"]
+        
         return {
-            "difficulty": requested_difficulty,
-            "was_adjusted": False,
+            "recommended_difficulty": recommended,
             "skill_level": skill,
             "allowed_difficulties": allowed,
-            "games_played": stats["games_on_easy"] if skill == "beginner" else stats["games_on_medium"],
-            "win_rate": stats["win_rate_on_easy"] if skill == "beginner" else stats["win_rate_on_medium"],
-            "promotion_info": {
-                "next_skill": PROMOTION_THRESHOLDS[skill]["next_skill"] if skill in PROMOTION_THRESHOLDS else None,
-                "games_needed": stats["easy_games_needed"] if skill == "beginner" else stats["medium_games_needed"],
-                "required_win_rate": PROMOTION_THRESHOLDS[skill]["min_win_rate"] if skill in PROMOTION_THRESHOLDS else 0,
-                "current_win_rate": stats["win_rate_on_easy"] if skill == "beginner" else stats["win_rate_on_medium"]
-            }
+            "games_played": easy_total if skill == "beginner" else medium_total,
+            "win_rate": round(easy_win_rate if skill == "beginner" else medium_win_rate, 1),
+            "next_level": {
+                "required_games": 6,
+                "required_win_rate": 60,
+                "games_played": easy_total if skill == "beginner" else medium_total,
+                "current_win_rate": round(easy_win_rate if skill == "beginner" else medium_win_rate, 1),
+                "games_needed": max(0, 6 - (easy_total if skill == "beginner" else medium_total))
+            } if skill != "advanced" else None
         }
