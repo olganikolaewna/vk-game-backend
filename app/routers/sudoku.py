@@ -65,18 +65,19 @@ async def new_sudoku_game(
 ):
     """
     Создать новую игру Судоку
+    Адаптация использует ТОЛЬКО последние 20 игр
     """
     user = await get_or_create_user(vk_user_id, session)
     
-    # Получаем адаптированную сложность
-    from ..services.adaptive_difficulty import AdaptiveDifficulty
-    
+    # Получаем адаптированную сложность (считает по последним 20 играм)
     adaptation = await AdaptiveDifficulty.get_adaptive_difficulty(
         vk_user_id=vk_user_id,
         requested_difficulty=difficulty,
         session=session,
-        client_skill=player_skill
+        client_skill=player_skill,
+        recent_games_limit=20  # Явно указываем 20
     )
+    
     
     adjusted_difficulty = adaptation["difficulty"]
     detected_skill = adaptation["skill_level"]
@@ -142,8 +143,10 @@ async def new_sudoku_game(
             "requested": difficulty,
             "was_adjusted": adaptation["was_adjusted"],
             "detected_skill": detected_skill,
-            "games_played": adaptation["games_played"],
-            "win_rate": adaptation["win_rate"]
+            "games_analyzed": adaptation["games_analyzed"],  # Показывает сколько игр анализировалось (20)
+            "total_games_all_time": adaptation["total_games_all_time"],  # Всего игр
+            "win_rate_last_20": adaptation["win_rate"],  # Win-rate за последние 20
+            "skill_source": adaptation["skill_source"]
         }
     }
 
