@@ -56,6 +56,8 @@ async def get_or_create_user(vk_user_id: str, session: Session) -> User:
 # Основные эндпоинты
 # ============================================
 
+# app/routers/sudoku.py - исправленный эндпоинт new_sudoku_game
+
 @router.post("/sudoku/new")
 async def new_sudoku_game(
     vk_user_id: str,
@@ -65,6 +67,7 @@ async def new_sudoku_game(
 ):
     """
     Создать новую игру Судоку
+    🔥 ФИКС: Если игрок пытается создать игру на запрещенной сложности - возвращаем ошибку
     """
     user = await get_or_create_user(vk_user_id, session)
     
@@ -79,10 +82,21 @@ async def new_sudoku_game(
     )
     
     adjusted_difficulty = adaptation["difficulty"]
-    detected_skill = adaptation["skill_level"]
+    was_adjusted = adaptation["was_adjusted"]
+    skill_level = adaptation["skill_level"]
     
-    logger.info(f"Creating game: user={vk_user_id}, requested={difficulty}, "
-                f"skill={detected_skill} (source: {adaptation['skill_source']})")
+    # 🔥 КРИТИЧЕСКИЙ ФИКС: Если сложность была изменена (понижена) - НЕ СОЗДАЕМ ИГРУ!
+    if was_adjusted:
+        logger.warning(f"User {vk_user_id} (skill: {skill_level}) attempted to create {difficulty} game, but only allowed up to {adjusted_difficulty}")
+        raise HTTPException(
+            status_code=403,
+            detail=f"Ваш текущий уровень ({skill_level}) не позволяет играть на сложности {difficulty}. "
+                   f"Доступные сложности: {', '.join(adaptation['allowed_difficulties'])}. "
+                   f"Сыграйте {adaptation['promotion_info']['required_games'] - adaptation['promotion_info']['easy_games_completed']} "
+                   f"игр на easy с win-rate {adaptation['promotion_info']['required_win_rate']}% для повышения уровня."
+        )
+    
+    logger.info(f"Creating game: user={vk_user_id}, difficulty={adjusted_difficulty}, skill={skill_level}")
     
     # Запрашиваем у ИИ-сервиса
     try:
@@ -90,12 +104,10 @@ async def new_sudoku_game(
             request_body = {
                 "game_type": "sudoku",
                 "difficulty": adjusted_difficulty,
-                "player_skill": detected_skill,
+                "player_skill": skill_level,
                 "prompt": "",
                 "custom_params": {}
             }
-            
-            logger.info(f"Sending to AI: {request_body}")
             
             response = await client.post(
                 f"{AI_SERVICE_URL}/api/v1/generate",
@@ -107,21 +119,16 @@ async def new_sudoku_game(
             puzzle_grid = data["data"]["puzzle"]
             solution_grid = data["data"]["solution"]
             
-            logger.info(f"AI service success for {adjusted_difficulty}")
-            
     except Exception as e:
         logger.error(f"AI service error: {e}")
-        
-        # Используем простую заглушку
+        # Заглушка
         puzzle_grid = [[0 for _ in range(9)] for _ in range(9)]
         solution_grid = [[0 for _ in range(9)] for _ in range(9)]
-        
-        # Заполняем базовую заглушку
         for i in range(9):
             puzzle_grid[i][i] = i + 1
             solution_grid[i][i] = i + 1
     
-    # Сохраняем игру
+    # Сохраняем игру ТОЛЬКО если сложность не была понижена
     new_game = SudokuGame(
         user_id=user.id,
         puzzle=json.dumps(puzzle_grid),
@@ -137,13 +144,15 @@ async def new_sudoku_game(
         "game_id": new_game.id,
         "puzzle": puzzle_grid,
         "difficulty": adjusted_difficulty,
-        "player_skill_used": detected_skill,
+        "player_skill_used": skill_level,
+        "allowed_difficulties": adaptation["allowed_difficulties"],
         "adaptation": {
             "requested": difficulty,
-            "was_adjusted": adaptation["was_adjusted"],
-            "detected_skill": detected_skill,
+            "was_adjusted": was_adjusted,
+            "detected_skill": skill_level,
             "games_played": adaptation["games_played"],
-            "win_rate": adaptation["win_rate"]
+            "win_rate": adaptation["win_rate"],
+            "games_needed_for_next_level": adaptation["promotion_info"].get("easy_games_needed", 0)
         }
     }
 
