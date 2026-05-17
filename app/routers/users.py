@@ -36,54 +36,74 @@ async def update_username(
     return {"message": "Username updated"}
 
 
+# app/routers/users.py (или где у вас эндпоинты)
+
 @router.get("/api/v1/users/{user_id}/stats")
 async def get_user_stats(
     user_id: int,
+    recent_games_limit: int = 20,  # Новый параметр
     session: Session = Depends(get_session)
 ):
     """
-    Получить общую статистику пользователя для отображения во фронте
-    Показывает ВСЕ игры (не только последние)
+    Получить статистику пользователя
+    
+    Args:
+        user_id: ID пользователя
+        recent_games_limit: Сколько последних игр учитывать (0 - все игры)
     """
     user = session.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
-    # Получаем ВСЕ игры
+    # Получаем все игры
     sudoku_games = session.exec(
         select(SudokuGame)
         .where(SudokuGame.user_id == user_id)
+        .order_by(SudokuGame.created_at.desc())
     ).all()
+    
+    # Если нужно только последние N игр
+    if recent_games_limit > 0:
+        sudoku_games = sudoku_games[:recent_games_limit]
     
     total_games = len(sudoku_games)
     completed_games = sum(1 for g in sudoku_games if g.is_completed)
-    win_rate = (completed_games / total_games * 100) if total_games > 0 else 0
+    win_rate = completed_games / total_games if total_games > 0 else 0
     
-    # Статистика по сложности (ВСЕ игры)
+    # Статистика по сложности
     sudoku_by_difficulty = {}
     for game in sudoku_games:
         diff = game.difficulty
         sudoku_by_difficulty[diff] = sudoku_by_difficulty.get(diff, 0) + 1
     
-    # Статистика по сложности с завершениями
-    sudoku_completed_by_difficulty = {}
-    for game in sudoku_games:
-        if game.is_completed:
-            diff = game.difficulty
-            sudoku_completed_by_difficulty[diff] = sudoku_completed_by_difficulty.get(diff, 0) + 1
-    
     return {
         "total_games": total_games,
         "completed_games": completed_games,
-        "win_rate": round(win_rate, 2),
+        "win_rate": win_rate,
         "rating": user.rating,
-        "games_by_difficulty": {
-            "total": sudoku_by_difficulty,
-            "completed": sudoku_completed_by_difficulty
+        "games_by_type": {
+            "sudoku": {"total": total_games, "completed": completed_games},
+            "puzzle": {"total": 0, "completed": 0}
         },
-        "last_game": {
-            "difficulty": sudoku_games[0].difficulty if sudoku_games else None,
-            "completed": sudoku_games[0].is_completed if sudoku_games else None,
-            "date": sudoku_games[0].created_at.isoformat() if sudoku_games else None
+        "sudoku_by_difficulty": sudoku_by_difficulty,
+        "puzzle_by_difficulty": {},
+        "stats_by_period": {  # Добавляем статистику по периодам
+            "last_10_games": _get_stats_for_last_n_games(sudoku_games, 10),
+            "last_20_games": _get_stats_for_last_n_games(sudoku_games, 20),
+            "last_50_games": _get_stats_for_last_n_games(sudoku_games, 50),
+            "all_games": {"total": total_games, "completed": completed_games, "win_rate": win_rate}
         }
+    }
+
+def _get_stats_for_last_n_games(games: List, n: int) -> Dict:
+    """Статистика по последним N играм"""
+    recent = games[:n]
+    total = len(recent)
+    completed = sum(1 for g in recent if g.is_completed)
+    win_rate = completed / total if total > 0 else 0
+    
+    return {
+        "total": total,
+        "completed": completed,
+        "win_rate": round(win_rate, 2)
     }
