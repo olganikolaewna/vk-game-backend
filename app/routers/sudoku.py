@@ -7,10 +7,10 @@ from datetime import datetime
 from typing import List, Optional
 from pydantic import BaseModel
 
-from app.db import get_session  # обнови импорт
-from app.models import User, SudokuGame  # обнови импорт
-from app.config import settings  # новый импорт
-from ..services.adaptive_difficulty import AdaptiveDifficulty
+from app.db import get_session
+from app.models import User, SudokuGame
+from app.config import settings
+from app.services.adaptive_difficulty import AdaptiveDifficulty  # ← Абсолютный импорт
 
 import random
 
@@ -44,11 +44,15 @@ async def get_or_create_user(vk_user_id: str, session: Session) -> User:
     
     user = session.exec(select(User).where(User.vk_user_id == vk_user_id_str)).first()
     if not user:
-        user = User(vk_user_id=vk_user_id_str, username=f"Player_{vk_user_id_str[:5]}")
+        user = User(
+            vk_user_id=vk_user_id_str, 
+            username=f"Player_{vk_user_id_str[:5]}",
+            skill_level="beginner"  # ← Явно устанавливаем начальный уровень
+        )
         session.add(user)
         session.commit()
         session.refresh(user)
-        logger.info(f"Created new user with VK ID: {vk_user_id_str}")
+        logger.info(f"Created new user with VK ID: {vk_user_id_str} (skill: beginner)")
     return user
 
 
@@ -71,7 +75,7 @@ async def new_sudoku_game(
     user = await get_or_create_user(vk_user_id, session)
     
     # Получаем адаптированную сложность (считаем по последним 20 играм)
-    from ..services.adaptive_difficulty import AdaptiveDifficulty
+
     
     adaptation = await AdaptiveDifficulty.get_adaptive_difficulty(
         vk_user_id=vk_user_id,

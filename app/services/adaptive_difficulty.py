@@ -1,316 +1,489 @@
+# app/services/adaptive_difficulty.py
+from sqlmodel import Session, select, func
+from typing import List, Dict, Any, Optional, Tuple
+from datetime import datetime, timedelta
 import logging
-from typing import Optional, Dict, Any, List
-from sqlmodel import Session, select
-from datetime import datetime
-from collections import defaultdict
-
-from ..models import User, SudokuGame, PuzzleGame
+import json
 
 logger = logging.getLogger(__name__)
 
-# Уровни сложности
-DIFFICULTY_LEVELS = {
-    "easy": 1,
-    "medium": 2,
-    "hard": 3
-}
-
-# Доступные сложности для каждого уровня игрока
-SKILL_ACCESS = {
-    "beginner": ["easy"],           # новичок - только easy
-    "intermediate": ["easy", "medium"],  # средний - easy и medium
-    "advanced": ["easy", "medium", "hard"]  # продвинутый - всё
-}
-
-# Какой уровень нужен для перехода
-PROMOTION_REQUIREMENTS = {
-    "beginner": {
-        "need_games_on": "easy",      # нужно играть на easy
-        "min_games": 10,              # минимум 10 игр на easy
-        "min_win_rate": 70,           # минимум 70% побед
-        "next_skill": "intermediate"
-    },
-    "intermediate": {
-        "need_games_on": "medium",    # нужно играть на medium
-        "min_games": 10,              # минимум 10 игр на medium
-        "min_win_rate": 60,           # минимум 60% побед
-        "next_skill": "advanced"
-    }
-}
 
 class AdaptiveDifficulty:
+    """Адаптивная система подбора сложности для Судоку"""
     
-    @staticmethod
-    def get_user_skill(user_id: int, session: Session) -> str:
-        """Получить сохраненный уровень навыка пользователя"""
-        user = session.get(User, user_id)
-        if not user or not user.skill_level:
-            return "beginner"
-        return user.skill_level
+    # Пороги для перехода между уровнями
+    SKILL_THRESHOLDS = {
+        "beginner": {
+            "next": "intermediate",
+            "min_games": 10,           # Минимум игр для перехода
+            "required_win_rate": 70,   # Нужный процент побед
+            "allowed_difficulties": ["easy"]
+        },
+        "intermediate": {
+            "next": "advanced",
+            "min_games": 10,
+            "required_win_rate": 60,
+            "allowed_difficulties": ["easy", "medium"]
+        },
+        "advanced": {
+            "next": None,
+            "min_games": 0,
+            "required_win_rate": 0,
+            "allowed_difficulties": ["easy", "medium", "hard"]
+        }
+    }
     
-    @staticmethod
-    def save_user_skill(user_id: int, skill: str, session: Session):
-        """Сохранить уровень навыка пользователя"""
-        user = session.get(User, user_id)
-        if user:
-            user.skill_level = skill
-            user.updated_at = datetime.utcnow()
-            session.add(user)
-            session.commit()
-            logger.info(f"User {user_id} skill updated to {skill}")
+    # Сложность по умолчанию для каждого уровня навыка
+    DEFAULT_DIFFICULTY = {
+        "beginner": "easy",
+        "intermediate": "medium",
+        "advanced": "hard"
+    }
     
-    @staticmethod
-    def get_relevant_games(user_id: int, session: Session, limit: int = 15) -> List:
-        """
-        Получить последние игры ТОЛЬКО на разрешенных сложностях
-        Игры на запрещенных сложностях игнорируются полностью
-        """
-        # Получаем текущий уровень игрока
-        current_skill = AdaptiveDifficulty.get_user_skill(user_id, session)
-        allowed_difficulties = SKILL_ACCESS.get(current_skill, ["easy"])
+    @classmethod
+    def get_user_stats(cls, user_id: int, session: Session, limit: int = None) -> Dict:
+        """Получить статистику игрока по Судоку"""
+        from ..models import SudokuGame
         
-        # Получаем все игры
-        sudoku_games = session.exec(
+        query = select(SudokuGame).where(SudokuGame.user_id == user_id)
+        
+        if limit:
+            query = query.order_by(SudokuGame.created_at.desc()).limit(limit)
+        else:
+            query = query.order_by(SudokuGame.created_at.desc())
+        
+        games = session.exec(query).all()
+        
+        if not games:
+            return {
+                "total_games": 0,
+                "completed_games": 0,
+                "win_rate": 0,
+                "games_by_difficulty": {},
+                "recent_games": []
+            }
+        
+        # Статистика по сложностям
+        games_by_diff = {}
+        completed_by_diff = {}
+        
+        for game in games:
+            diff = game.difficulty
+            games_by_diff[diff] = games_by_diff.get(diff, 0) + 1
+            if game.is_completed:
+                completed_by_diff[diff] = completed_by_diff.get(diff, 0) + 1
+        
+        # Рассчитываем win rate по каждой сложности
+        win_rate_by_diff = {}
+        for diff, total in games_by_diff.items():
+            completed = completed_by_diff.get(diff, 0)
+            win_rate_by_diff[diff] = (completed / total * 100) if total > 0 else 0
+        
+        total_completed = sum(completed_by_diff.values())
+        total_games = len(games)
+        
+        return {
+            "total_games": total_games,
+            "completed_games": total_completed,
+            "win_rate": (total_completed / total_games * 100) if total_games > 0 else 0,
+            "games_by_difficulty": games_by_diff,
+            "win_rate_by_difficulty": win_rate_by_diff,
+            "recent_games": games[:20]  # последние 20 игр
+        }
+    
+    @classmethod
+    def get_user_full_stats(cls, user_id: int, session: Session) -> Dict:
+        """Получить полную статистику (все игры за всё время)"""
+        from ..models import SudokuGame
+        
+        games = session.exec(
+            select(SudokuGame).where(SudokuGame.user_id == user_id)
+        ).all()
+        
+        total_games = len(games)
+        completed_games = sum(1 for g in games if g.is_completed)
+        
+        return {
+            "total_games": total_games,
+            "completed_games": completed_games,
+            "win_rate": (completed_games / total_games * 100) if total_games > 0 else 0,
+            "stats_by_difficulty": cls.get_stats_by_difficulty(games)
+        }
+    
+    @classmethod
+    def get_stats_by_difficulty(cls, games: List) -> Dict:
+        """Статистика по сложностям"""
+        stats = {}
+        for game in games:
+            diff = game.difficulty
+            if diff not in stats:
+                stats[diff] = {"total": 0, "completed": 0}
+            stats[diff]["total"] += 1
+            if game.is_completed:
+                stats[diff]["completed"] += 1
+        
+        for diff in stats:
+            total = stats[diff]["total"]
+            completed = stats[diff]["completed"]
+            stats[diff]["win_rate"] = (completed / total * 100) if total > 0 else 0
+        
+        return stats
+    
+    @classmethod
+    def get_relevant_games(cls, user_id: int, session: Session, limit: int = 20) -> List:
+        """Получить последние N игр для анализа"""
+        from ..models import SudokuGame
+        
+        games = session.exec(
             select(SudokuGame)
             .where(SudokuGame.user_id == user_id)
             .order_by(SudokuGame.created_at.desc())
+            .limit(limit)
         ).all()
         
-        puzzle_games = session.exec(
-            select(PuzzleGame)
-            .where(PuzzleGame.user_id == user_id)
-            .order_by(PuzzleGame.created_at.desc())
-        ).all()
-        
-        all_games = sudoku_games + puzzle_games
-        all_games.sort(key=lambda g: g.created_at, reverse=True)
-        
-        # Фильтруем ТОЛЬКО игры на разрешенных сложностях
-        relevant_games = []
-        for game in all_games:
-            if game.difficulty in allowed_difficulties:
-                relevant_games.append(game)
-            else:
-                logger.debug(f"Ignoring game on {game.difficulty} (user skill: {current_skill})")
-        
-        # Возвращаем последние N игр
-        return relevant_games[:limit]
+        return games
     
-    @staticmethod
-    def calculate_win_rate(games: List) -> Dict[str, Any]:
-        """Рассчитать win-rate по списку игр"""
+    @classmethod
+    def calculate_win_rate(cls, games: List) -> Dict:
+        """Рассчитать винрейт по списку игр"""
         if not games:
             return {
-                "win_rate": 0,
                 "total_games": 0,
-                "completed_games": 0
+                "completed_games": 0,
+                "win_rate": 0,
+                "stats_by_difficulty": {}
             }
         
-        total = len(games)
-        completed = sum(1 for g in games if g.is_completed)
-        win_rate = (completed / total * 100) if total > 0 else 0
+        stats_by_diff = {}
+        completed = 0
         
-        # Статистика по сложностям
-        stats_by_difficulty = defaultdict(lambda: {"total": 0, "completed": 0})
         for game in games:
-            stats_by_difficulty[game.difficulty]["total"] += 1
+            diff = game.difficulty
+            if diff not in stats_by_diff:
+                stats_by_diff[diff] = {"total": 0, "completed": 0}
+            stats_by_diff[diff]["total"] += 1
             if game.is_completed:
-                stats_by_difficulty[game.difficulty]["completed"] += 1
+                stats_by_diff[diff]["completed"] += 1
+                completed += 1
+        
+        for diff in stats_by_diff:
+            total = stats_by_diff[diff]["total"]
+            comp = stats_by_diff[diff]["completed"]
+            stats_by_diff[diff]["win_rate"] = (comp / total * 100) if total > 0 else 0
         
         return {
-            "win_rate": round(win_rate, 2),
-            "total_games": total,
+            "total_games": len(games),
             "completed_games": completed,
-            "stats_by_difficulty": dict(stats_by_difficulty)
+            "win_rate": (completed / len(games) * 100) if games else 0,
+            "stats_by_difficulty": stats_by_diff
         }
     
-    @staticmethod
-    def update_skill_level(user_id: int, session: Session) -> Dict[str, Any]:
+    @classmethod
+    def determine_skill_level(cls, user_id: int, session: Session) -> Tuple[str, Dict]:
         """
-        Обновить уровень навыка на основе последних 15 игр
-        Вызывается после каждой завершенной игры
+        Определить уровень навыка игрока на основе его игр
+        
+        Returns:
+            (skill_level, promotion_info)
         """
-        current_skill = AdaptiveDifficulty.get_user_skill(user_id, session)
+        from ..models import User, SudokuGame
         
-        # Получаем последние 15 релевантных игр
-        recent_games = AdaptiveDifficulty.get_relevant_games(user_id, session, limit=15)
+        # Получаем пользователя
+        user = session.get(User, user_id)
+        if not user:
+            return "beginner", {}
         
-        if len(recent_games) < 3:
-            # Недостаточно игр для оценки
-            return {
-                "skill": current_skill,
-                "changed": False,
-                "reason": f"Not enough games ({len(recent_games)}/3)",
-                "stats": AdaptiveDifficulty.calculate_win_rate(recent_games)
+        current_skill = user.skill_level
+        
+        # Если уже advanced, не понижаем
+        if current_skill == "advanced":
+            return "advanced", {}
+        
+        # Получаем последние игры нужного уровня
+        games = cls.get_relevant_games(user_id, session, limit=20)
+        
+        if current_skill == "beginner":
+            # Для перехода на intermediate нужно:
+            # 1. Сыграть минимум 10 игр на easy
+            # 2. Win rate на easy >= 70%
+            easy_games = [g for g in games if g.difficulty == "easy"]
+            easy_games_count = len(easy_games)
+            
+            if easy_games_count >= 10:
+                easy_win_rate = cls.calculate_win_rate(easy_games)["win_rate"]
+                
+                if easy_win_rate >= 70:
+                    return "intermediate", {
+                        "promoted": True,
+                        "from": "beginner",
+                        "to": "intermediate",
+                        "reason": f"Выиграно {easy_win_rate:.0f}% игр на лёгком уровне (нужно 70%)"
+                    }
+            
+            return "beginner", {
+                "promoted": False,
+                "required": {
+                    "easy_games_needed": max(0, 10 - easy_games_count),
+                    "required_win_rate": 70,
+                    "current_win_rate": cls.calculate_win_rate(easy_games)["win_rate"] if easy_games else 0
+                }
             }
         
-        # Проверяем возможность повышения
-        if current_skill in PROMOTION_REQUIREMENTS:
-            req = PROMOTION_REQUIREMENTS[current_skill]
-            need_difficulty = req["need_games_on"]
+        elif current_skill == "intermediate":
+            # Для перехода на advanced нужно:
+            # 1. Сыграть минимум 10 игр на medium
+            # 2. Win rate на medium >= 60%
+            medium_games = [g for g in games if g.difficulty == "medium"]
+            medium_games_count = len(medium_games)
             
-            # Считаем статистику ТОЛЬКО по нужной сложности
-            games_on_need = [g for g in recent_games if g.difficulty == need_difficulty]
-            stats = AdaptiveDifficulty.calculate_win_rate(games_on_need)
-            
-            logger.info(f"User {user_id} - Checking promotion from {current_skill}: "
-                       f"played {stats['total_games']}/{req['min_games']} games on {need_difficulty}, "
-                       f"win rate {stats['win_rate']}%")
-            
-            # Проверяем условия для повышения
-            if (stats['total_games'] >= req['min_games'] and 
-                stats['win_rate'] >= req['min_win_rate']):
+            if medium_games_count >= 10:
+                medium_win_rate = cls.calculate_win_rate(medium_games)["win_rate"]
                 
-                new_skill = req['next_skill']
-                AdaptiveDifficulty.save_user_skill(user_id, new_skill, session)
-                
-                return {
-                    "skill": new_skill,
-                    "changed": True,
-                    "from_skill": current_skill,
-                    "reason": f"Mastered {need_difficulty}: {stats['completed_games']}/{stats['total_games']} wins ({stats['win_rate']:.0f}%)",
-                    "stats": stats
+                if medium_win_rate >= 60:
+                    return "advanced", {
+                        "promoted": True,
+                        "from": "intermediate",
+                        "to": "advanced",
+                        "reason": f"Выиграно {medium_win_rate:.0f}% игр на среднем уровне (нужно 60%)"
+                    }
+            
+            return "intermediate", {
+                "promoted": False,
+                "required": {
+                    "medium_games_needed": max(0, 10 - medium_games_count),
+                    "required_win_rate": 60,
+                    "current_win_rate": cls.calculate_win_rate(medium_games)["win_rate"] if medium_games else 0
                 }
+            }
         
-        # Проверяем возможность понижения (если игрок стал хуже играть)
-        if current_skill == "intermediate":
-            # Если проигрывает на medium больше 70% времени - понижаем
-            medium_games = [g for g in recent_games if g.difficulty == "medium"]
-            if len(medium_games) >= 5:
-                medium_stats = AdaptiveDifficulty.calculate_win_rate(medium_games)
-                if medium_stats['win_rate'] < 40:
-                    AdaptiveDifficulty.save_user_skill(user_id, "beginner", session)
-                    return {
-                        "skill": "beginner",
-                        "changed": True,
-                        "from_skill": current_skill,
-                        "reason": f"Struggling on medium: {medium_stats['win_rate']:.0f}% win rate",
-                        "stats": medium_stats
-                    }
-        
-        if current_skill == "advanced":
-            # Если проигрывает на hard больше 70% времени - понижаем до intermediate
-            hard_games = [g for g in recent_games if g.difficulty == "hard"]
-            if len(hard_games) >= 5:
-                hard_stats = AdaptiveDifficulty.calculate_win_rate(hard_games)
-                if hard_stats['win_rate'] < 40:
-                    AdaptiveDifficulty.save_user_skill(user_id, "intermediate", session)
-                    return {
-                        "skill": "intermediate",
-                        "changed": True,
-                        "from_skill": current_skill,
-                        "reason": f"Struggling on hard: {hard_stats['win_rate']:.0f}% win rate",
-                        "stats": hard_stats
-                    }
-        
-        # Уровень не изменился
-        all_stats = AdaptiveDifficulty.calculate_win_rate(recent_games)
-        return {
-            "skill": current_skill,
-            "changed": False,
-            "reason": f"Current level maintained",
-            "stats": all_stats
-        }
+        return current_skill, {}
     
-    @staticmethod
-    async def get_adaptive_difficulty(
-        vk_user_id: str,
-        requested_difficulty: str,
-        session: Session,
-        auto_adjust: bool = True
-    ) -> Dict[str, Any]:
+    @classmethod
+    def update_skill_level(cls, user_id: int, session: Session) -> Dict:
         """
-        Получить адаптированную сложность для игры
+        Обновить уровень навыка игрока на основе его игр
+        
+        Returns:
+            Информация об обновлении
         """
         from ..models import User
         
-        # Находим пользователя
+        user = session.get(User, user_id)
+        if not user:
+            return {"error": "User not found"}
+        
+        old_skill = user.skill_level
+        new_skill, promotion_info = cls.determine_skill_level(user_id, session)
+        
+        if new_skill != old_skill:
+            user.skill_level = new_skill
+            session.add(user)
+            session.commit()
+            
+            return {
+                "updated": True,
+                "old_skill": old_skill,
+                "new_skill": new_skill,
+                "reason": promotion_info.get("reason", "Skill level updated based on performance")
+            }
+        
+        return {
+            "updated": False,
+            "current_skill": old_skill,
+            "progress": promotion_info.get("required", {})
+        }
+    
+    @classmethod
+    async def get_adaptive_difficulty(
+        cls,
+        vk_user_id: str,
+        requested_difficulty: str,
+        session: Session,
+        client_skill: Optional[str] = None,
+        auto_adjust: bool = True,
+        recent_games_limit: int = 20
+    ) -> Dict:
+        """
+        Получить адаптированную сложность для игры
+        
+        Args:
+            vk_user_id: VK ID пользователя
+            requested_difficulty: Запрошенная сложность
+            session: Сессия БД
+            client_skill: Уровень навыка (если передан с клиента)
+            auto_adjust: Автоматически корректировать сложность
+            recent_games_limit: Количество последних игр для анализа
+        
+        Returns:
+            Dict с информацией об адаптации
+        """
+        from ..models import User
+        
+        # Получаем или создаём пользователя
         user = session.exec(
             select(User).where(User.vk_user_id == str(vk_user_id))
         ).first()
         
         if not user:
-            # Новый игрок - всегда beginner
-            return {
-                "difficulty": "easy",
-                "was_adjusted": requested_difficulty != "easy",
-                "skill_level": "beginner",
-                "reason": "New player - can only play easy",
-                "allowed_difficulties": ["easy"]
+            user = User(
+                vk_user_id=str(vk_user_id),
+                username=f"Player_{str(vk_user_id)[:5]}",
+                skill_level="beginner"
+            )
+            session.add(user)
+            session.commit()
+            session.refresh(user)
+        
+        # Определяем реальный уровень навыка
+        skill_level = client_skill or user.skill_level
+        
+        # Получаем последние игры
+        games = cls.get_relevant_games(user.id, session, recent_games_limit)
+        recent_stats = cls.calculate_win_rate(games)
+        
+        # Получаем разрешённые сложности
+        thresholds = cls.SKILL_THRESHOLDS.get(skill_level, cls.SKILL_THRESHOLDS["beginner"])
+        allowed_difficulties = thresholds["allowed_difficulties"]
+        
+        # Базовая информация о прогрессе
+        promotion_info = {}
+        
+        if skill_level == "beginner":
+            easy_games = [g for g in games if g.difficulty == "easy"]
+            easy_win_rate = cls.calculate_win_rate(easy_games)["win_rate"] if easy_games else 0
+            promotion_info = {
+                "easy_games_played": len(easy_games),
+                "easy_games_needed": max(0, 10 - len(easy_games)),
+                "required_win_rate": 70,
+                "current_win_rate": easy_win_rate,
+                "next_skill": "intermediate"
+            }
+        elif skill_level == "intermediate":
+            medium_games = [g for g in games if g.difficulty == "medium"]
+            medium_win_rate = cls.calculate_win_rate(medium_games)["win_rate"] if medium_games else 0
+            promotion_info = {
+                "medium_games_played": len(medium_games),
+                "medium_games_needed": max(0, 10 - len(medium_games)),
+                "required_win_rate": 60,
+                "current_win_rate": medium_win_rate,
+                "next_skill": "advanced"
             }
         
-        # Получаем текущий уровень
-        skill = AdaptiveDifficulty.get_user_skill(user.id, session)
-        allowed = SKILL_ACCESS.get(skill, ["easy"])
-        
+        # Определяем итоговую сложность
         final_difficulty = requested_difficulty
         was_adjusted = False
         reason = ""
+        detailed_reason = ""
         
         if auto_adjust:
-            if requested_difficulty not in allowed:
-                # Запрошенная сложность недоступна - понижаем до максимальной доступной
-                final_difficulty = allowed[-1]
+            # Если запрошенная сложность не разрешена
+            if requested_difficulty not in allowed_difficulties:
+                final_difficulty = thresholds["allowed_difficulties"][-1]  # Берём максимальную разрешённую
                 was_adjusted = True
-                reason = f"Cannot play {requested_difficulty} at {skill} level, using {final_difficulty}"
-            else:
-                reason = f"Playing {requested_difficulty} at {skill} level"
-        else:
-            reason = "Auto-adjust disabled"
-        
-        # Получаем статистику для отображения
-        recent_games = AdaptiveDifficulty.get_relevant_games(user.id, session, limit=15)
-        stats = AdaptiveDifficulty.calculate_win_rate(recent_games)
+                reason = f"Сложность '{requested_difficulty}' недоступна для вашего уровня ({skill_level})"
+                detailed_reason = f"Ваш уровень: {skill_level}. Доступны: {', '.join(allowed_difficulties)}"
+            
+            # Адаптация на основе винрейта (если игрок слишком сильный для своего уровня)
+            elif skill_level == "beginner" and requested_difficulty == "easy":
+                easy_win_rate = recent_stats["stats_by_difficulty"].get("easy", {}).get("win_rate", 0)
+                if easy_win_rate >= 80 and recent_stats["total_games"] >= 5:
+                    # Игрок слишком хорош для лёгкого, повышаем до medium
+                    if "medium" in allowed_difficulties:
+                        final_difficulty = "medium"
+                        was_adjusted = True
+                        reason = "Вы слишком хороши для лёгкого уровня!"
+                        detailed_reason = f"Ваш винрейт на лёгком: {easy_win_rate:.0f}%"
+            
+            elif skill_level == "intermediate" and requested_difficulty == "medium":
+                medium_win_rate = recent_stats["stats_by_difficulty"].get("medium", {}).get("win_rate", 0)
+                if medium_win_rate >= 75 and recent_stats["total_games"] >= 5:
+                    if "hard" in allowed_difficulties:
+                        final_difficulty = "hard"
+                        was_adjusted = True
+                        reason = "Вы слишком хороши для среднего уровня!"
+                        detailed_reason = f"Ваш винрейт на среднем: {medium_win_rate:.0f}%"
         
         return {
             "difficulty": final_difficulty,
             "was_adjusted": was_adjusted,
-            "skill_level": skill,
+            "skill_level": skill_level,
+            "allowed_difficulties": allowed_difficulties,
+            "games_analyzed": len(games),
+            "total_games_all_time": recent_stats["total_games"],
+            "win_rate": recent_stats["win_rate"],
+            "easy_win_rate": recent_stats["stats_by_difficulty"].get("easy", {}).get("win_rate"),
+            "medium_win_rate": recent_stats["stats_by_difficulty"].get("medium", {}).get("win_rate"),
+            "hard_win_rate": recent_stats["stats_by_difficulty"].get("hard", {}).get("win_rate"),
+            "promotion_info": promotion_info,
             "reason": reason,
-            "allowed_difficulties": allowed,
-            "stats": stats  # Статистика по последним 15 играм
+            "detailed_reason": detailed_reason,
+            "requested": requested_difficulty,
+            "message": f"Автоматически изменено с {requested_difficulty} на {final_difficulty}" if was_adjusted 
+                      else f"Игра создана на уровне {final_difficulty}"
         }
     
-    @staticmethod
-    def get_user_full_stats(user_id: int, session: Session) -> Dict[str, Any]:
+    @classmethod
+    def suggest_next_difficulty(cls, user_id: int, session: Session) -> Dict:
         """
-        Полная статистика для фронтенда (ВСЕ игры, без ограничений)
+        Предложить следующую сложность на основе статистики
         """
-        sudoku_games = session.exec(
-            select(SudokuGame).where(SudokuGame.user_id == user_id)
-        ).all()
+        from ..models import User
         
-        puzzle_games = session.exec(
-            select(PuzzleGame).where(PuzzleGame.user_id == user_id)
-        ).all()
+        user = session.get(User, user_id)
+        if not user:
+            return {"suggestion": "easy"}
         
-        all_games = sudoku_games + puzzle_games
+        stats = cls.get_user_stats(user_id, session, limit=20)
         
-        if not all_games:
+        if user.skill_level == "beginner":
+            easy_win_rate = stats["win_rate_by_difficulty"].get("easy", 0)
+            easy_games = stats["games_by_difficulty"].get("easy", 0)
+            
+            if easy_games >= 10 and easy_win_rate >= 70:
+                return {
+                    "suggestion": "medium",
+                    "reason": "Вы готовы перейти на средний уровень!",
+                    "confidence": "high"
+                }
+            elif easy_win_rate >= 80 and easy_games >= 5:
+                return {
+                    "suggestion": "medium",
+                    "reason": "Вы хорошо справляетесь с лёгким уровнем. Попробуйте средний!",
+                    "confidence": "medium"
+                }
+            else:
+                return {
+                    "suggestion": "easy",
+                    "reason": f"Продолжайте тренироваться на лёгком. Нужно {max(0, 10 - easy_games)} игр и {70 - easy_win_rate:.0f}% побед до повышения.",
+                    "confidence": "low"
+                }
+        
+        elif user.skill_level == "intermediate":
+            medium_win_rate = stats["win_rate_by_difficulty"].get("medium", 0)
+            medium_games = stats["games_by_difficulty"].get("medium", 0)
+            
+            if medium_games >= 10 and medium_win_rate >= 60:
+                return {
+                    "suggestion": "hard",
+                    "reason": "Вы готовы перейти на сложный уровень!",
+                    "confidence": "high"
+                }
+            elif medium_win_rate >= 75 and medium_games >= 5:
+                return {
+                    "suggestion": "hard",
+                    "reason": "Вы хорошо справляетесь со средним уровнем. Попробуйте сложный!",
+                    "confidence": "medium"
+                }
+            else:
+                return {
+                    "suggestion": "medium",
+                    "reason": f"Продолжайте тренироваться на среднем. Нужно {max(0, 10 - medium_games)} игр и {60 - medium_win_rate:.0f}% побед до повышения.",
+                    "confidence": "low"
+                }
+        
+        else:
             return {
-                "total_games": 0,
-                "completed_games": 0,
-                "win_rate": 0
+                "suggestion": "hard",
+                "reason": "Вы на высшем уровне мастерства!",
+                "confidence": "high"
             }
-        
-        total = len(all_games)
-        completed = sum(1 for g in all_games if g.is_completed)
-        win_rate = (completed / total * 100) if total > 0 else 0
-        
-        # Статистика по сложностям
-        by_difficulty = defaultdict(lambda: {"total": 0, "completed": 0})
-        for game in all_games:
-            by_difficulty[game.difficulty]["total"] += 1
-            if game.is_completed:
-                by_difficulty[game.difficulty]["completed"] += 1
-        
-        return {
-            "total_games": total,
-            "completed_games": completed,
-            "win_rate": round(win_rate, 2),
-            "by_difficulty": dict(by_difficulty),
-            "by_type": {
-                "sudoku": len(sudoku_games),
-                "puzzle": len(puzzle_games)
-            }
-        }

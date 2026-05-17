@@ -388,6 +388,8 @@ async def on_game_completed(
     Обновляет уровень навыка
     """
     try:
+        from ..services.adaptive_difficulty import AdaptiveDifficulty
+        
         # Находим игру
         if game_type == "sudoku":
             game = session.get(SudokuGame, game_id)
@@ -398,16 +400,22 @@ async def on_game_completed(
             return {"status": "ignored", "reason": "Game not found or not completed"}
         
         # Обновляем уровень навыка
-        skill_update = AdaptiveDifficulty.update_skill_level(game.user_id, session)
+        if game_type == "sudoku":
+            skill_update = AdaptiveDifficulty.update_skill_level(game.user_id, session)
+            
+            # Дополнительно: получаем следующую рекомендуемую сложность
+            next_suggestion = AdaptiveDifficulty.suggest_next_difficulty(game.user_id, session)
+            
+            return {
+                "status": "updated",
+                "skill_update": skill_update,
+                "next_difficulty_suggestion": next_suggestion
+            }
         
-        return {
-            "status": "updated",
-            "skill_update": skill_update
-        }
+        return {"status": "ignored", "reason": "Puzzle games don't affect skill level yet"}
         
     except Exception as e:
         logger.error(f"Error in game completed callback: {e}")
         return {"status": "error", "reason": str(e)}
-    
 
    
