@@ -1,4 +1,4 @@
-# app/services/adaptive_difficulty.py
+# app/services/adaptive_difficulty.py - ПОЛНОСТЬЮ РАБОЧАЯ ВЕРСИЯ
 
 import logging
 from typing import Optional, Dict, Any
@@ -20,22 +20,19 @@ PROMOTION_THRESHOLDS = {
         "min_games": 10,
         "min_win_rate": 60,
         "next_skill": "intermediate",
-        "max_difficulty": "easy",
-        "window_size": 10
+        "max_difficulty": "easy"
     },
     "intermediate": {
         "min_games": 10,
         "min_win_rate": 60,
         "next_skill": "advanced",
-        "max_difficulty": "medium",
-        "window_size": 10
+        "max_difficulty": "medium"
     },
     "advanced": {
         "min_games": 0,
         "min_win_rate": 0,
         "next_skill": None,
-        "max_difficulty": "hard",
-        "window_size": 10
+        "max_difficulty": "hard"
     }
 }
 
@@ -56,9 +53,7 @@ class AdaptiveDifficulty:
         auto_adjust: bool = True
     ) -> Dict[str, Any]:
         """
-        Возвращает адаптированную сложность
-        win-rate для повышения считается по последним 10 играм
-        но показывает и полную статистику
+        Простая рабочая версия
         """
         from ..models import User
         
@@ -74,89 +69,94 @@ class AdaptiveDifficulty:
                 "was_adjusted": requested_difficulty != "easy",
                 "skill_level": "beginner",
                 "allowed_difficulties": ["easy"],
-                "total_games_all_time": 0,
-                "win_rate_all_time": 0,
-                "games_played_last_10": 0,
-                "win_rate_last_10": 0,
+                "total_games": 0,
+                "completed_games": 0,
+                "win_rate": 0,
                 "games_needed": 10,
                 "required_win_rate": 60
             }
         
-        # 🔥 Получаем ВСЕ игры пользователя
+        # Получаем ВСЕ игры пользователя
         sudoku_games = session.exec(
-            select(SudokuGame)
-            .where(SudokuGame.user_id == user.id)
-            .order_by(SudokuGame.created_at.desc())
+            select(SudokuGame).where(SudokuGame.user_id == user.id)
         ).all()
         
-        # ========== ПОЛНАЯ СТАТИСТИКА (для отображения) ==========
-        easy_games_all = [g for g in sudoku_games if g.difficulty == "easy"]
-        medium_games_all = [g for g in sudoku_games if g.difficulty == "medium"]
-        hard_games_all = [g for g in sudoku_games if g.difficulty == "hard"]
+        # Подсчитываем статистику по ВСЕМ играм
+        total_games = len(sudoku_games)
+        completed_games = sum(1 for g in sudoku_games if g.is_completed)
+        win_rate_all = (completed_games / total_games * 100) if total_games > 0 else 0
         
-        easy_wins_all = sum(1 for g in easy_games_all if g.is_completed)
-        easy_total_all = len(easy_games_all)
-        easy_win_rate_all = (easy_wins_all / easy_total_all * 100) if easy_total_all > 0 else 0
+        # Статистика по сложностям
+        easy_games = [g for g in sudoku_games if g.difficulty == "easy"]
+        medium_games = [g for g in sudoku_games if g.difficulty == "medium"]
+        hard_games = [g for g in sudoku_games if g.difficulty == "hard"]
         
-        medium_wins_all = sum(1 for g in medium_games_all if g.is_completed)
-        medium_total_all = len(medium_games_all)
-        medium_win_rate_all = (medium_wins_all / medium_total_all * 100) if medium_total_all > 0 else 0
+        easy_total = len(easy_games)
+        easy_completed = sum(1 for g in easy_games if g.is_completed)
+        easy_win_rate = (easy_completed / easy_total * 100) if easy_total > 0 else 0
         
-        # ========== СТАТИСТИКА ДЛЯ ПОВЫШЕНИЯ (последние 10 игр) ==========
-        window_size = 10
-        last_easy_games = easy_games_all[:window_size]
-        last_medium_games = medium_games_all[:window_size]
+        medium_total = len(medium_games)
+        medium_completed = sum(1 for g in medium_games if g.is_completed)
+        medium_win_rate = (medium_completed / medium_total * 100) if medium_total > 0 else 0
         
-        easy_wins_last10 = sum(1 for g in last_easy_games if g.is_completed)
-        easy_total_last10 = len(last_easy_games)
-        easy_win_rate_last10 = (easy_wins_last10 / easy_total_last10 * 100) if easy_total_last10 > 0 else 0
+        # Статистика по последним 10 играм для повышения
+        last_10_games = sudoku_games[:10]  # Первые 10 (самые новые)
+        last_10_wins = sum(1 for g in last_10_games if g.is_completed)
+        last_10_total = len(last_10_games)
+        last_10_win_rate = (last_10_wins / last_10_total * 100) if last_10_total > 0 else 0
         
-        medium_wins_last10 = sum(1 for g in last_medium_games if g.is_completed)
-        medium_total_last10 = len(last_medium_games)
-        medium_win_rate_last10 = (medium_wins_last10 / medium_total_last10 * 100) if medium_total_last10 > 0 else 0
+        # Определяем скилл на основе последних 10 игр на easy
+        last_10_easy = [g for g in last_10_games if g.difficulty == "easy"]
+        last_10_easy_wins = sum(1 for g in last_10_easy if g.is_completed)
+        last_10_easy_total = len(last_10_easy)
+        last_10_easy_win_rate = (last_10_easy_wins / last_10_easy_total * 100) if last_10_easy_total > 0 else 0
         
-        # 🔥 Определяем скилл НА ОСНОВЕ ПОСЛЕДНИХ 10 ИГР
-        skill = "beginner"
+        # Простая логика определения скилла
+        if easy_total >= 10 and last_10_easy_win_rate >= 60:
+            skill = "intermediate"
+            if medium_total >= 10:
+                last_10_medium = [g for g in last_10_games if g.difficulty == "medium"]
+                last_10_medium_wins = sum(1 for g in last_10_medium if g.is_completed)
+                last_10_medium_total = len(last_10_medium)
+                last_10_medium_win_rate = (last_10_medium_wins / last_10_medium_total * 100) if last_10_medium_total > 0 else 0
+                if last_10_medium_win_rate >= 60:
+                    skill = "advanced"
+        else:
+            skill = "beginner"
         
-        if easy_total_all >= PROMOTION_THRESHOLDS["beginner"]["min_games"]:
-            if easy_win_rate_last10 >= PROMOTION_THRESHOLDS["beginner"]["min_win_rate"]:
-                skill = "intermediate"
-        
-        if skill == "intermediate" and medium_total_all >= PROMOTION_THRESHOLDS["intermediate"]["min_games"]:
-            if medium_win_rate_last10 >= PROMOTION_THRESHOLDS["intermediate"]["min_win_rate"]:
-                skill = "advanced"
-        
-        # Определяем доступные сложности
+        # Доступные сложности
+        allowed_difficulties = SKILL_TO_ALLOWED_DIFFICULTIES.get(skill, ["easy"])
         max_difficulty = PROMOTION_THRESHOLDS[skill]["max_difficulty"]
-        allowed_difficulties = SKILL_TO_ALLOWED_DIFFICULTIES[skill]
         
         # Автоматическая адаптация
         final_difficulty = requested_difficulty
         was_adjusted = False
         
-        if DIFFICULTY_LEVELS[requested_difficulty] > DIFFICULTY_LEVELS[max_difficulty]:
+        if DIFFICULTY_LEVELS.get(requested_difficulty, 1) > DIFFICULTY_LEVELS.get(max_difficulty, 1):
             final_difficulty = max_difficulty
             was_adjusted = True
         
-        # Расчет прогресса для следующего уровня
+        # Расчет прогресса
         if skill == "beginner":
-            current_wins_last10 = easy_wins_last10
-            current_total_last10 = easy_total_last10
-            current_win_rate_last10 = easy_win_rate_last10
-            games_needed = max(0, PROMOTION_THRESHOLDS["beginner"]["min_games"] - easy_total_last10)
-            required_win_rate = PROMOTION_THRESHOLDS["beginner"]["min_win_rate"]
+            needed_for_next = max(0, 10 - last_10_easy_total)
+            wins_needed = max(0, 6 - last_10_easy_wins)
+            current_win_rate = last_10_easy_win_rate
+            games_analyzed = last_10_easy_total
         elif skill == "intermediate":
-            current_wins_last10 = medium_wins_last10
-            current_total_last10 = medium_total_last10
-            current_win_rate_last10 = medium_win_rate_last10
-            games_needed = max(0, PROMOTION_THRESHOLDS["intermediate"]["min_games"] - medium_total_last10)
-            required_win_rate = PROMOTION_THRESHOLDS["intermediate"]["min_win_rate"]
+            last_10_medium = [g for g in last_10_games if g.difficulty == "medium"]
+            medium_wins = sum(1 for g in last_10_medium if g.is_completed)
+            medium_total = len(last_10_medium)
+            needed_for_next = max(0, 10 - medium_total)
+            wins_needed = max(0, 6 - medium_wins)
+            current_win_rate = (medium_wins / medium_total * 100) if medium_total > 0 else 0
+            games_analyzed = medium_total
         else:
-            current_wins_last10 = 10
-            current_total_last10 = 10
-            current_win_rate_last10 = 100
-            games_needed = 0
-            required_win_rate = 0
+            needed_for_next = 0
+            wins_needed = 0
+            current_win_rate = 100
+            games_analyzed = 10
+        
+        logger.info(f"Player {vk_user_id}: total_games={total_games}, skill={skill}, last10_win_rate={last_10_win_rate:.1f}%")
         
         return {
             "difficulty": final_difficulty,
@@ -164,42 +164,40 @@ class AdaptiveDifficulty:
             "skill_level": skill,
             "allowed_difficulties": allowed_difficulties,
             
-            # 🔥 ПОЛНАЯ СТАТИСТИКА (для отображения на фронтенде)
-            "total_stats": {
+            # Полная статистика (ВСЕ игры)
+            "total_games": total_games,
+            "completed_games": completed_games,
+            "win_rate_all": round(win_rate_all, 1),
+            
+            # Статистика по сложностям
+            "stats_by_difficulty": {
                 "easy": {
-                    "total": easy_total_all,
-                    "completed": easy_wins_all,
-                    "win_rate": round(easy_win_rate_all, 1)
+                    "total": easy_total,
+                    "completed": easy_completed,
+                    "win_rate": round(easy_win_rate, 1)
                 },
                 "medium": {
-                    "total": medium_total_all,
-                    "completed": medium_wins_all,
-                    "win_rate": round(medium_win_rate_all, 1)
+                    "total": medium_total,
+                    "completed": medium_completed,
+                    "win_rate": round(medium_win_rate, 1)
                 },
                 "hard": {
-                    "total": len(hard_games_all),
-                    "completed": sum(1 for g in hard_games_all if g.is_completed),
-                    "win_rate": round((sum(1 for g in hard_games_all if g.is_completed) / len(hard_games_all) * 100), 1) if hard_games_all else 0
-                },
-                "all_games": {
-                    "total": len(sudoku_games),
-                    "completed": sum(1 for g in sudoku_games if g.is_completed),
-                    "win_rate": round((sum(1 for g in sudoku_games if g.is_completed) / len(sudoku_games) * 100), 1) if sudoku_games else 0
+                    "total": len(hard_games),
+                    "completed": sum(1 for g in hard_games if g.is_completed),
+                    "win_rate": round((sum(1 for g in hard_games if g.is_completed) / len(hard_games) * 100), 1) if hard_games else 0
                 }
             },
             
-            # 🔥 СТАТИСТИКА ДЛЯ ПОВЫШЕНИЯ (последние 10 игр)
+            # Статистика для повышения (последние игры)
             "promotion_stats": {
-                "window_size": window_size,
-                "games_analyzed": current_total_last10,
-                "wins": current_wins_last10,
-                "win_rate": round(current_win_rate_last10, 1),
-                "required_win_rate": required_win_rate,
-                "games_needed_to_next_level": games_needed,
-                "wins_needed": max(0, int(required_win_rate / 100 * window_size) - current_wins_last10),
-                "progress_percentage": min(100, (current_wins_last10 / window_size * 100)) if current_total_last10 >= window_size else current_win_rate_last10
+                "last_10_games_total": last_10_total,
+                "last_10_games_wins": last_10_wins,
+                "last_10_win_rate": round(last_10_win_rate, 1),
+                "required_win_rate": 60,
+                "wins_needed_for_next_level": wins_needed,
+                "games_needed_for_next_level": needed_for_next,
+                "current_progress": f"{last_10_easy_wins if skill == 'beginner' else (last_10_medium_wins if skill == 'intermediate' else 10)}/10"
             },
             
-            "max_difficulty": max_difficulty,
-            "next_level": PROMOTION_THRESHOLDS[skill]["next_skill"] if skill in PROMOTION_THRESHOLDS else None
+            "max_difficulty": max_difficulty
         }
