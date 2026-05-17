@@ -1,79 +1,51 @@
-from typing import List, Dict, Optional
-from fastapi import APIRouter, Depends, HTTPException
+# app/routers/users.py
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select
+from typing import Optional, List, Dict
+from datetime import datetime
+
 from ..db import get_session
 from ..models import User, SudokuGame, PuzzleGame
 
 router = APIRouter(prefix="/api/v1/users", tags=["Users"])
 
-@router.get("/{vk_user_id}/profile")
-async def get_user_profile(
-    vk_user_id: str,
-    session: Session = Depends(get_session)
-):
-    """Получить профиль пользователя"""
-    user = session.exec(select(User).where(User.vk_user_id == vk_user_id)).first()
-    if not user:
-        raise HTTPException(404, "User not found")
+def _get_stats_for_last_n_games(games: list, n: int) -> dict:
+    """Статистика по последним N играм"""
+    recent = games[:n]
+    total = len(recent)
+    completed = sum(1 for g in recent if g.is_completed)
+    win_rate = (completed / total * 100) if total > 0 else 0
+    
     return {
-        "vk_user_id": user.vk_user_id,
-        "username": user.username,
-        "rating": user.rating,
-        "created_at": user.created_at
+        "total": total,
+        "completed": completed,
+        "win_rate": round(win_rate, 2)
     }
 
-@router.put("/{vk_user_id}/username")
-async def update_username(
-    vk_user_id: str,
-    new_username: str,
-    session: Session = Depends(get_session)
-):
-    """Изменить имя пользователя"""
-    user = session.exec(select(User).where(User.vk_user_id == vk_user_id)).first()
-    user.username = new_username
-    session.add(user)
-    session.commit()
-    return {"message": "Username updated"}
-
-
-
-## app/routers/users.py - добавлен параметр для фильтрации
-
-@router.get("/api/v1/users/{user_id}/stats")
+@router.get("/{user_id}/stats")
 async def get_user_stats(
     user_id: int,
-    recent_games_limit: int = 0,
-    difficulty_filter: Optional[str] = None,  # 🔥 НОВЫЙ ПАРАМЕТР: "easy", "medium", "hard"
+    recent_games_limit: int = Query(0, description="0 - все игры, >0 - последние N"),
     session: Session = Depends(get_session)
 ):
-    """
-    Получить статистику пользователя
-    
-    Args:
-        user_id: ID пользователя
-        recent_games_limit: 0 - все игры, >0 - только последние N
-        difficulty_filter: Фильтр по сложности (easy/medium/hard)
-    """
+    """Получить статистику пользователя"""
     user = session.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
-    # Получаем игры с фильтрацией
-    sudoku_query = select(SudokuGame).where(SudokuGame.user_id == user_id)
-    puzzle_query = select(PuzzleGame).where(PuzzleGame.user_id == user_id)
+    # Получаем ВСЕ игры
+    sudoku_games = session.exec(
+        select(SudokuGame)
+        .where(SudokuGame.user_id == user_id)
+        .order_by(SudokuGame.created_at.desc())
+    ).all()
     
-    if difficulty_filter:
-        sudoku_query = sudoku_query.where(SudokuGame.difficulty == difficulty_filter)
-        puzzle_query = puzzle_query.where(PuzzleGame.difficulty == difficulty_filter)
-    
-    sudoku_games = session.exec(sudoku_query.order_by(SudokuGame.created_at.desc())).all()
-    puzzle_games = session.exec(puzzle_query.order_by(PuzzleGame.created_at.desc())).all()
-    
-    all_games = sudoku_games + puzzle_games
+    all_games = sudoku_games
     all_games.sort(key=lambda g: g.created_at, reverse=True)
     
     total_all_games = len(all_games)
     
+    # Выбираем игры для статистики
     if recent_games_limit > 0:
         games_for_stats = all_games[:recent_games_limit]
     else:
@@ -83,176 +55,82 @@ async def get_user_stats(
     completed_games = sum(1 for g in games_for_stats if g.is_completed)
     win_rate = (completed_games / total_games * 100) if total_games > 0 else 0
     
+    # Статистика по сложности
+    sudoku_by_difficulty = {}
+    for game in sudoku_games:
+        diff = game.difficulty
+        sudoku_by_difficulty[diff] = sudoku_by_difficulty.get(diff, 0) + 1
+    
     return {
         "user_id": user.id,
         "vk_user_id": user.vk_user_id,
         "username": user.username,
         "rating": user.rating,
+        
         "total_games_all_time": total_all_games,
         "completed_games_all_time": sum(1 for g in all_games if g.is_completed),
-        "filter_applied": {
-            "difficulty": difficulty_filter or "all",
-            "games_analyzed": total_games
-        },
+        "win_rate_all_time": round(sum(1 for g in all_games if g.is_completed) / total_all_games * 100, 2) if total_all_games > 0 else 0,
+        
         "stats_period": {
             "games_analyzed": total_games,
             "completed_analyzed": completed_games,
             "win_rate": round(win_rate, 2),
             "limit_type": "all_games" if recent_games_limit == 0 else f"last_{recent_games_limit}_games"
         },
+        
         "games_by_type": {
             "sudoku": {
                 "total": len(sudoku_games),
                 "completed": sum(1 for g in sudoku_games if g.is_completed),
-                "by_difficulty": _count_by_difficulty(sudoku_games)
-            },
-            "puzzle": {
-                "total": len(puzzle_games),
-                "completed": sum(1 for g in puzzle_games if g.is_completed),
-                "by_difficulty": _count_by_difficulty(puzzle_games)
-            }
-        }
-    }
-
-def _count_by_difficulty(games):
-    """Подсчет игр по сложности"""
-    result = {}
-    for game in games:
-        diff = game.difficulty
-        result[diff] = result.get(diff, 0) + 1
-    return result
-
-def _get_stats_for_last_n_games(games: List, n: int) -> Dict:
-    """Статистика по последним N играм"""
-    recent = games[:n]
-    total = len(recent)
-    completed = sum(1 for g in recent if g.is_completed)
-    win_rate = (completed / total * 100) if total > 0 else 0
-    
-    return {
-        "total": total,
-        "completed": completed,
-        "win_rate": round(win_rate, 2)
-    }
-
-
-# В файле users.py, исправьте эндпоинт:
-
-@router.get("/api/v1/users/{user_id}/stats")
-async def get_user_stats(
-    user_id: int,
-    recent_games_limit: int = 0,  # Изменяем: 0 = все игры, >0 = только последние N
-    session: Session = Depends(get_session)
-):
-    """
-    Получить статистику пользователя
-    
-    Args:
-        user_id: ID пользователя
-        recent_games_limit: 
-            0 - все игры (полная статистика)
-            >0 - только последние N игр
-    """
-    user = session.get(User, user_id)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    # Получаем все игры пользователя
-    sudoku_games = session.exec(
-        select(SudokuGame)
-        .where(SudokuGame.user_id == user_id)
-        .order_by(SudokuGame.created_at.desc())
-    ).all()
-    
-    puzzle_games = session.exec(
-        select(PuzzleGame)
-        .where(PuzzleGame.user_id == user_id)
-        .order_by(PuzzleGame.created_at.desc())
-    ).all()
-    
-    all_games = sudoku_games + puzzle_games
-    all_games.sort(key=lambda g: g.created_at, reverse=True)
-    
-    total_all_games = len(all_games)  # Полное количество игр
-    
-    # Если нужно ограничить количество игр для расчёта
-    if recent_games_limit > 0:
-        games_for_stats = all_games[:recent_games_limit]
-    else:
-        games_for_stats = all_games  # Берём все игры
-    
-    total_games = len(games_for_stats)
-    completed_games = sum(1 for g in games_for_stats if g.is_completed)
-    win_rate = completed_games / total_games if total_games > 0 else 0
-    
-    # Статистика по сложности (только для выбранных игр)
-    sudoku_by_difficulty = {}
-    puzzle_by_difficulty = {}
-    
-    for game in games_for_stats:
-        if isinstance(game, SudokuGame):
-            diff = game.difficulty
-            sudoku_by_difficulty[diff] = sudoku_by_difficulty.get(diff, 0) + 1
-        else:  # PuzzleGame
-            diff = game.difficulty
-            puzzle_by_difficulty[diff] = puzzle_by_difficulty.get(diff, 0) + 1
-    
-    # Отдельная статистика по Sudoku и Puzzle для выбранных игр
-    sudoku_in_stats = [g for g in games_for_stats if isinstance(g, SudokuGame)]
-    puzzle_in_stats = [g for g in games_for_stats if isinstance(g, PuzzleGame)]
-    
-    return {
-        "user_id": user.id,
-        "vk_user_id": user.vk_user_id,
-        "username": user.username,
-        "rating": user.rating,
-        
-        # ПОЛНАЯ статистика (все игры пользователя)
-        "total_games_all_time": total_all_games,
-        "completed_games_all_time": sum(1 for g in all_games if g.is_completed),
-        
-        # Статистика по выбранному периоду/лимиту
-        "stats_period": {
-            "games_analyzed": total_games,
-            "completed_analyzed": completed_games,
-            "win_rate": round(win_rate, 2),
-            "limit_type": "all_games" if recent_games_limit == 0 else f"last_{recent_games_limit}_games"
-        },
-        
-        "games_by_type": {
-            "sudoku": {
-                "total": len(sudoku_in_stats),
-                "completed": sum(1 for g in sudoku_in_stats if g.is_completed),
                 "by_difficulty": sudoku_by_difficulty
             },
             "puzzle": {
-                "total": len(puzzle_in_stats),
-                "completed": sum(1 for g in puzzle_in_stats if g.is_completed),
-                "by_difficulty": puzzle_by_difficulty
+                "total": 0,
+                "completed": 0,
+                "by_difficulty": {}
             }
         },
         
-        "stats_by_period": {  # Разная статистика для разных периодов
+        "stats_by_period": {
             "last_10_games": _get_stats_for_last_n_games(all_games, 10),
             "last_20_games": _get_stats_for_last_n_games(all_games, 20),
             "last_50_games": _get_stats_for_last_n_games(all_games, 50),
             "all_games": {
-                "total": total_all_games, 
-                "completed": sum(1 for g in all_games if g.is_completed), 
+                "total": total_all_games,
+                "completed": sum(1 for g in all_games if g.is_completed),
                 "win_rate": round(sum(1 for g in all_games if g.is_completed) / total_all_games * 100, 2) if total_all_games > 0 else 0
             }
         }
     }
 
-def _get_stats_for_last_n_games(games: List, n: int) -> Dict:
-    """Статистика по последним N играм"""
-    recent = games[:n]
-    total = len(recent)
-    completed = sum(1 for g in recent if g.is_completed)
-    win_rate = (completed / total * 100) if total > 0 else 0
-    
+@router.get("/{user_id}/profile")
+async def get_user_profile(
+    user_id: int,
+    session: Session = Depends(get_session)
+):
+    """Получить профиль пользователя"""
+    user = session.get(User, user_id)
+    if not user:
+        raise HTTPException(404, "User not found")
     return {
-        "total": total,
-        "completed": completed,
-        "win_rate": round(win_rate, 2)
+        "id": user.id,
+        "vk_user_id": user.vk_user_id,
+        "username": user.username,
+        "rating": user.rating,
+        "created_at": user.created_at
     }
+
+@router.put("/{user_id}/username")
+async def update_username(
+    user_id: int,
+    new_username: str,
+    session: Session = Depends(get_session)
+):
+    """Изменить имя пользователя"""
+    user = session.get(User, user_id)
+    if not user:
+        raise HTTPException(404, "User not found")
+    user.username = new_username
+    session.add(user)
+    session.commit()
+    return {"message": "Username updated", "username": new_username}

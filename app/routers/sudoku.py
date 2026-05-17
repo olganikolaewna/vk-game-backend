@@ -56,10 +56,6 @@ async def get_or_create_user(vk_user_id: str, session: Session) -> User:
 # Основные эндпоинты
 # ============================================
 
-# app/routers/sudoku.py - исправленный эндпоинт new_sudoku_game
-
-# app/routers/sudoku.py - замените эндпоинт new_sudoku_game
-
 @router.post("/sudoku/new")
 async def new_sudoku_game(
     vk_user_id: str,
@@ -70,20 +66,23 @@ async def new_sudoku_game(
     """
     Создать новую игру Судоку
     🔥 Автоматически переводит на разрешенный уровень
+    🔥 Адаптация работает на основе последних 20 игр
     """
     user = await get_or_create_user(vk_user_id, session)
     
-    # Получаем адаптированную сложность
+    # Получаем адаптированную сложность (считаем по последним 20 играм)
     from ..services.adaptive_difficulty import AdaptiveDifficulty
     
     adaptation = await AdaptiveDifficulty.get_adaptive_difficulty(
         vk_user_id=vk_user_id,
         requested_difficulty=difficulty,
         session=session,
-        client_skill=player_skill
+        client_skill=player_skill,
+        auto_adjust=True,           # Явно включаем адаптацию
+        recent_games_limit=20       # Анализируем последние 20 игр
     )
     
-    # 🔥 Берем итоговую сложность (уже адаптированную)
+    # Берем итоговую сложность (уже адаптированную)
     final_difficulty = adaptation["difficulty"]
     was_adjusted = adaptation["was_adjusted"]
     skill_level = adaptation["skill_level"]
@@ -92,7 +91,8 @@ async def new_sudoku_game(
     if was_adjusted:
         logger.info(f"User {vk_user_id} (skill: {skill_level}) requested {difficulty}, auto-adjusted to {final_difficulty}")
     
-    logger.info(f"Creating game: user={vk_user_id}, difficulty={final_difficulty}, skill={skill_level}")
+    logger.info(f"Creating game: user={vk_user_id}, difficulty={final_difficulty}, skill={skill_level}, "
+                f"analyzed {adaptation.get('games_analyzed', 0)} recent games")
     
     # Запрашиваем у ИИ-сервиса
     try:
@@ -136,6 +136,10 @@ async def new_sudoku_game(
     session.commit()
     session.refresh(new_game)
     
+    # Получаем информацию о прогрессе для следующего уровня
+    promotion_info = adaptation.get("promotion_info", {})
+    games_needed = promotion_info.get("easy_games_needed", 0) or promotion_info.get("medium_games_needed", 0)
+    
     return {
         "game_id": new_game.id,
         "puzzle": puzzle_grid,
@@ -146,10 +150,16 @@ async def new_sudoku_game(
         "allowed_difficulties": allowed_difficulties,
         "adaptation": {
             "skill_level": skill_level,
-            "games_played": adaptation.get("games_played", 0),
-            "win_rate": adaptation.get("win_rate", 0),
-            "games_needed_for_next_level": adaptation.get("games_needed", 0),
-            "required_win_rate": adaptation.get("required_win_rate", 0),
+            "games_analyzed": adaptation.get("games_analyzed", 0),
+            "total_games_all_time": adaptation.get("total_games_all_time", 0),
+            "win_rate_recent": adaptation.get("win_rate", 0),
+            "easy_win_rate": adaptation.get("easy_win_rate"),
+            "medium_win_rate": adaptation.get("medium_win_rate"),
+            "games_needed_for_next_level": games_needed,
+            "required_win_rate": promotion_info.get("required_win_rate", 0),
+            "next_skill": promotion_info.get("next_skill"),
+            "reason": adaptation.get("reason", ""),
+            "detailed_reason": adaptation.get("detailed_reason", ""),
             "message": f"Автоматически изменено с {difficulty} на {final_difficulty}" if was_adjusted else f"Игра создана на уровне {final_difficulty}"
         }
     }
