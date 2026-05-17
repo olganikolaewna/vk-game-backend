@@ -289,16 +289,12 @@ async def get_hint(
         solution = json.loads(game.solution)
         current_board = json.loads(game.current_board) if game.current_board else json.loads(game.puzzle)
         
-        # 🔍 Собираем все пустые клетки (которые должен заполнить игрок)
+        # Собираем все пустые клетки
         empty_cells = []
         for row in range(9):
             for col in range(9):
-                # Клетка считается пустой, если:
-                # 1. Это не изначальная клетка (puzzle[row][col] == 0)
-                # 2. Игрок её ещё не заполнил правильно
                 if puzzle[row][col] == 0:
                     if current_board[row][col] == 0:
-                        # Совсем пустая клетка
                         empty_cells.append({
                             "row": row,
                             "col": col,
@@ -307,7 +303,6 @@ async def get_hint(
                             "reason": "empty"
                         })
                     elif current_board[row][col] != solution[row][col]:
-                        # Заполнено неправильно - тоже кандидат на подсказку
                         empty_cells.append({
                             "row": row,
                             "col": col,
@@ -316,10 +311,7 @@ async def get_hint(
                             "reason": "wrong"
                         })
         
-        # 🎲 Если есть неправильные клетки, даём подсказку для них (приоритет)
-        # Иначе — для пустых
         if not empty_cells:
-            # Проверяем, может игра уже решена?
             is_complete = all(
                 all(current_board[row][col] != 0 for col in range(9))
                 for row in range(9)
@@ -337,18 +329,14 @@ async def get_hint(
                     "hint_available": False
                 }
         
-        # 🎲 Выбираем случайную клетку (гарантированно разную при каждом запросе)
         random_cell = random.choice(empty_cells)
         row = random_cell["row"]
         col = random_cell["col"]
         correct_value = random_cell["correct_value"]
         
-        # 💾 СОХРАНЯЕМ ПОДСКАЗКУ КАК ХОД
-        # Обновляем доску правильным значением
+        # Сохраняем подсказку как ход
         current_board[row][col] = correct_value
         game.current_board = json.dumps(current_board)
-        
-        # Обновляем время последнего хода
         game.last_move_at = datetime.utcnow()
         
         # Проверяем, не завершена ли игра после подсказки
@@ -359,6 +347,7 @@ async def get_hint(
         
         is_win = False
         rating_earned = 0
+        skill_update = None
         
         if is_complete:
             # Проверяем, всё ли правильно
@@ -367,17 +356,22 @@ async def get_hint(
                 game.is_completed = True
                 game.completed_at = datetime.utcnow()
                 
-                # Начисляем очки (но меньше, чем за самостоятельное решение)
+                # Начисляем очки (меньше, чем за самостоятельное решение)
                 difficulty_scores = {"easy": 8, "medium": 15, "hard": 25}
                 rating_earned = difficulty_scores.get(game.difficulty, 10)
                 user.rating += rating_earned
+                
+                # 🔥 КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: Обновляем уровень навыка
+                from app.services.adaptive_difficulty import AdaptiveDifficulty
+                skill_update = AdaptiveDifficulty.update_skill_level(user.id, session)
+                logger.info(f"Skill update from hint win: {skill_update}")
+                
                 session.add(user)
                 
                 message = f"🎉 Подсказка привела к победе! +{rating_earned} к рейтингу (с подсказкой)"
             else:
                 message = "Все клетки заполнены, но есть ошибки. Проверьте решение!"
         else:
-            # Формируем сообщение в зависимости от ситуации
             if random_cell["reason"] == "wrong":
                 message = f"🔍 Подсказка: клетка [{row}, {col}] исправлена с {random_cell['current_value']} на {correct_value}"
             else:
@@ -386,6 +380,10 @@ async def get_hint(
         # Сохраняем изменения
         session.add(game)
         session.commit()
+        
+        # Если игра завершена, обновляем объект пользователя
+        if is_win:
+            session.refresh(user)
         
         # Подсчитываем оставшиеся пустые клетки
         remaining_empty = sum(
@@ -403,7 +401,8 @@ async def get_hint(
             "hint_available": True,
             "remaining_empty_cells": remaining_empty,
             "is_game_over": is_win,
-            "rating_earned": rating_earned
+            "rating_earned": rating_earned,
+            "skill_update": skill_update  # ← Добавляем информацию об обновлении уровня
         }
         
     except HTTPException:
