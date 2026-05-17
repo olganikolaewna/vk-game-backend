@@ -461,9 +461,21 @@ async def check_solution(
         rating_earned = difficulty_scores.get(game.difficulty, 20)
         user.rating += rating_earned
         
+        skill_update = AdaptiveDifficulty.update_skill_level(user.id, session)
+        
         session.add(user)
         session.add(game)
         session.commit()
+        
+        logger.info(f"Sudoku {game_id} completed by user {vk_user_id}, earned {rating_earned} points")
+        
+        return {
+            "is_correct": True,
+            "is_complete": True,
+            "message": f"🎉 Поздравляем! Судоку решена правильно! +{rating_earned} к рейтингу",
+            "rating_earned": rating_earned,
+            "skill_update": skill_update  # ← Добавляем информацию об обновлении уровня
+        }
         
         logger.info(f"Sudoku {game_id} completed by user {vk_user_id}, earned {rating_earned} points")
         
