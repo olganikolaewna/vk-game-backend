@@ -67,7 +67,6 @@ async def new_sudoku_game(
 ):
     """
     Создать новую игру Судоку
-    🔥 ФИКС: Если игрок пытается создать игру на запрещенной сложности - возвращаем ошибку
     """
     user = await get_or_create_user(vk_user_id, session)
     
@@ -82,18 +81,15 @@ async def new_sudoku_game(
     )
     
     adjusted_difficulty = adaptation["difficulty"]
-    was_adjusted = adaptation["was_adjusted"]
-    skill_level = adaptation["skill_level"]
+    was_adjusted = adaptation.get("was_adjusted", False)
+    skill_level = adaptation.get("skill_level", "beginner")
     
-    # 🔥 КРИТИЧЕСКИЙ ФИКС: Если сложность была изменена (понижена) - НЕ СОЗДАЕМ ИГРУ!
+    # 🔥 Упрощенная проверка - без promotion_info
     if was_adjusted:
-        logger.warning(f"User {vk_user_id} (skill: {skill_level}) attempted to create {difficulty} game, but only allowed up to {adjusted_difficulty}")
+        logger.warning(f"User {vk_user_id} (skill: {skill_level}) attempted to create {difficulty} game")
         raise HTTPException(
             status_code=403,
-            detail=f"Ваш текущий уровень ({skill_level}) не позволяет играть на сложности {difficulty}. "
-                   f"Доступные сложности: {', '.join(adaptation['allowed_difficulties'])}. "
-                   f"Сыграйте {adaptation['promotion_info']['required_games'] - adaptation['promotion_info']['easy_games_completed']} "
-                   f"игр на easy с win-rate {adaptation['promotion_info']['required_win_rate']}% для повышения уровня."
+            detail=f"Ваш текущий уровень ({skill_level}) не позволяет играть на сложности {difficulty}. Доступно: {', '.join(adaptation.get('allowed_difficulties', ['easy']))}"
         )
     
     logger.info(f"Creating game: user={vk_user_id}, difficulty={adjusted_difficulty}, skill={skill_level}")
@@ -128,7 +124,7 @@ async def new_sudoku_game(
             puzzle_grid[i][i] = i + 1
             solution_grid[i][i] = i + 1
     
-    # Сохраняем игру ТОЛЬКО если сложность не была понижена
+    # Сохраняем игру
     new_game = SudokuGame(
         user_id=user.id,
         puzzle=json.dumps(puzzle_grid),
@@ -145,14 +141,12 @@ async def new_sudoku_game(
         "puzzle": puzzle_grid,
         "difficulty": adjusted_difficulty,
         "player_skill_used": skill_level,
-        "allowed_difficulties": adaptation["allowed_difficulties"],
         "adaptation": {
             "requested": difficulty,
             "was_adjusted": was_adjusted,
             "detected_skill": skill_level,
-            "games_played": adaptation["games_played"],
-            "win_rate": adaptation["win_rate"],
-            "games_needed_for_next_level": adaptation["promotion_info"].get("easy_games_needed", 0)
+            "games_played": adaptation.get("games_played", 0),
+            "win_rate": adaptation.get("win_rate", 0)
         }
     }
 
