@@ -134,3 +134,73 @@ def _get_stats_for_last_n_games(games: List, n: int) -> Dict:
         "completed": completed,
         "win_rate": round(win_rate, 2)
     }
+
+
+# app/routers/users.py - добавьте этот эндпоинт
+
+@router.get("/{vk_user_id}/detailed-stats")
+async def get_user_detailed_stats(
+    vk_user_id: str,
+    session: Session = Depends(get_session)
+):
+    """
+    Получить ДЕТАЛЬНУЮ статистику пользователя:
+    - Полная статистика (все игры)
+    - Статистика для повышения (последние 10 игр)
+    - Прогресс к следующему уровню
+    """
+    user = session.exec(select(User).where(User.vk_user_id == vk_user_id)).first()
+    if not user:
+        raise HTTPException(404, "User not found")
+    
+    from ..services.adaptive_difficulty import AdaptiveDifficulty
+    
+    # Получаем адаптированную статистику
+    adaptation = await AdaptiveDifficulty.get_adaptive_difficulty(
+        vk_user_id=vk_user_id,
+        requested_difficulty="easy",
+        session=session
+    )
+    
+    return {
+        "vk_user_id": user.vk_user_id,
+        "username": user.username,
+        "rating": user.rating,
+        
+        # 🔥 ПОЛНАЯ СТАТИСТИКА (все игры)
+        "total_stats": adaptation["total_stats"],
+        
+        # 🔥 СТАТИСТИКА ДЛЯ ПОВЫШЕНИЯ (последние 10 игр)
+        "promotion_stats": adaptation["promotion_stats"],
+        
+        # 🔥 ТЕКУЩИЙ СТАТУС
+        "current_level": {
+            "skill": adaptation["skill_level"],
+            "max_difficulty": adaptation["max_difficulty"],
+            "allowed_difficulties": adaptation["allowed_difficulties"],
+            "next_level": adaptation["next_level"]
+        },
+        
+        # 🔥 СООБЩЕНИЕ ДЛЯ ИГРОКА
+        "message": _get_progress_message(adaptation)
+    }
+
+def _get_progress_message(adaptation: Dict) -> str:
+    """Понятное сообщение о прогрессе"""
+    skill = adaptation["skill_level"]
+    promo = adaptation["promotion_stats"]
+    
+    if skill == "advanced":
+        return "🏆 Поздравляем! Вы достигли максимального уровня! Можете играть на любой сложности."
+    
+    if skill == "intermediate":
+        wins_needed = promo["wins_needed"]
+        if wins_needed <= 0:
+            return "🔥 Вы готовы к повышению до Advanced! Сыграйте еще несколько игр на medium для подтверждения."
+        return f"📈 До повышения до Advanced нужно выиграть {wins_needed} из следующих {promo['window_size']} игр на medium (нужно 60% побед). Сейчас {promo['win_rate']}% за последние {promo['games_analyzed']} игр."
+    
+    # beginner
+    wins_needed = promo["wins_needed"]
+    if wins_needed <= 0:
+        return "🔥 Вы готовы к повышению до Intermediate! Сыграйте еще несколько игр на easy для подтверждения."
+    return f"📈 До повышения до Intermediate нужно выиграть {wins_needed} из следующих {promo['window_size']} игр на easy (нужно 60% побед). Сейчас {promo['win_rate']}% за последние {promo['games_analyzed']} игр."
