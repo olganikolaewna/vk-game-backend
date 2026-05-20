@@ -5,7 +5,7 @@ from sqlmodel import Session, select
 from .db import get_session, init_db  # <-- Исправляем импорт
 import httpx
 import os
-from .routers import sudoku, stats, users, puzzle
+from .routers import sudoku, stats, puzzle
 
 AI_SERVICE_URL = os.getenv("AI_SERVICE_URL", "http://91.227.68.140:8000")
 
@@ -45,7 +45,7 @@ def on_startup():
 app.include_router(sudoku.router, prefix="/api/v1/games", tags=["Sudoku"])
 app.include_router(puzzle.router, prefix="/api/v1/games", tags=["Puzzle"]) 
 app.include_router(stats.router, prefix="/api/v1/stats", tags=["Stats"])
-app.include_router(users.router, prefix="/api/v1/users", tags=["Users"])
+
 
 
 @app.get("/", tags=["Root"])
