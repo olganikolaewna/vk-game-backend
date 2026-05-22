@@ -44,7 +44,7 @@ def on_startup():
 # Подключаем роутеры
 app.include_router(sudoku.router, prefix="/api/v1/games", tags=["Sudoku"])
 app.include_router(puzzle.router, prefix="/api/v1/games", tags=["Puzzle"]) 
-app.include_router(stats.router, prefix="/api/v1/stats", tags=["Stats"])
+app.include_router(stats.router, prefix="/api/v1/stats", tags=["Stats & Leaderboard"])
 
 
 
