@@ -6,7 +6,7 @@ from typing import Optional, List, Dict, Any
 import logging
 
 from ..db import get_session
-from ..models import User, SudokuGame, PuzzleGame
+from ..models import User, SudokuGame
 from ..services.adaptive_difficulty import AdaptiveDifficulty
 
 logger = logging.getLogger(__name__)
@@ -56,18 +56,14 @@ async def get_leaderboard(
             sudoku_count = session.exec(
                 select(func.count(SudokuGame.id)).where(SudokuGame.user_id == user.id)
             ).one()
-            puzzle_count = session.exec(
-                select(func.count(PuzzleGame.id)).where(PuzzleGame.user_id == user.id)
-            ).one()
             
             result.append({
                 "rank": offset + idx + 1,
                 "vk_user_id": user.vk_user_id,
                 "username": user.username,
                 "rating": user.rating,
-                "games_played": sudoku_count + puzzle_count,
+                "games_played": sudoku_count,
                 "sudoku_games": sudoku_count,
-                "puzzle_games": puzzle_count
             })
         
         # Общее количество пользователей для пагинации
@@ -89,30 +85,26 @@ async def get_daily_leaderboard(
     limit: int = Query(10, ge=1, le=100),
     session: Session = Depends(get_session)
 ):
-    """Топ игроков за сегодня по количеству побед"""
+    """Топ игроков за сегодня по количеству побед (только судоку)"""
     try:
         today_start = datetime.combine(date.today(), datetime.min.time())
         
-        # Оптимизированный запрос через JOIN
         query = """
             SELECT 
                 u.vk_user_id,
                 u.username,
-                COUNT(CASE WHEN sg.is_completed AND sg.completed_at >= %s THEN 1 END) as sudoku_wins,
-                COUNT(CASE WHEN pg.is_completed AND pg.completed_at >= %s THEN 1 END) as puzzle_wins
+                COUNT(CASE WHEN sg.is_completed AND sg.completed_at >= %s THEN 1 END) as sudoku_wins
             FROM users u
             LEFT JOIN sudoku_games sg ON u.id = sg.user_id
-            LEFT JOIN puzzle_games pg ON u.id = pg.user_id
             GROUP BY u.id, u.vk_user_id, u.username
             HAVING COUNT(CASE WHEN sg.is_completed AND sg.completed_at >= %s THEN 1 END) > 0
-                OR COUNT(CASE WHEN pg.is_completed AND pg.completed_at >= %s THEN 1 END) > 0
-            ORDER BY (sudoku_wins + puzzle_wins) DESC
+            ORDER BY sudoku_wins DESC
             LIMIT %s
         """
         
         result = session.exec(
             query,
-            params=[today_start, today_start, today_start, today_start, limit]
+            params=[today_start, today_start, limit]  # ← 3 параметра
         )
         
         results = []
@@ -120,36 +112,26 @@ async def get_daily_leaderboard(
             results.append({
                 "vk_user_id": row[0],
                 "username": row[1],
-                "wins_today": row[2] + row[3],
-                "sudoku_wins": row[2],
-                "puzzle_wins": row[3]
+                "wins_today": row[2],
+                "sudoku_wins": row[2]
             })
         
         return results
         
     except Exception as e:
         logger.error(f"Error in daily leaderboard: {e}")
-        # Fallback на простой метод если сложный запрос не работает
+        # Fallback на простой метод
         try:
             users = session.exec(select(User)).all()
             
             results = []
             for user in users:
-                completed_today = 0
-                completed_today += session.exec(
+                completed_today = session.exec(
                     select(func.count(SudokuGame.id))
                     .where(
                         SudokuGame.user_id == user.id, 
                         SudokuGame.is_completed == True, 
                         SudokuGame.completed_at >= today_start
-                    )
-                ).one()
-                completed_today += session.exec(
-                    select(func.count(PuzzleGame.id))
-                    .where(
-                        PuzzleGame.user_id == user.id, 
-                        PuzzleGame.is_completed == True, 
-                        PuzzleGame.completed_at >= today_start
                     )
                 ).one()
                 
@@ -187,14 +169,6 @@ async def get_weekly_leaderboard(
                     SudokuGame.user_id == user.id,
                     SudokuGame.is_completed == True,
                     SudokuGame.completed_at >= week_start
-                )
-            ).one()
-            completed_weekly += session.exec(
-                select(func.count(PuzzleGame.id))
-                .where(
-                    PuzzleGame.user_id == user.id,
-                    PuzzleGame.is_completed == True,
-                    PuzzleGame.completed_at >= week_start
                 )
             ).one()
             
@@ -238,25 +212,11 @@ async def get_completed_games_stats(
             .order_by(func.date(SudokuGame.completed_at))
         ).all()
         
-        puzzle_daily = session.exec(
-            select(
-                func.date(PuzzleGame.completed_at).label("date"),
-                func.count(PuzzleGame.id).label("count")
-            )
-            .where(
-                PuzzleGame.is_completed == True,
-                PuzzleGame.completed_at >= start_date
-            )
-            .group_by(func.date(PuzzleGame.completed_at))
-            .order_by(func.date(PuzzleGame.completed_at))
-        ).all()
         
         return {
             "period_days": days,
             "sudoku_completions": [{"date": str(row[0]), "count": row[1]} for row in sudoku_daily],
-            "puzzle_completions": [{"date": str(row[0]), "count": row[1]} for row in puzzle_daily],
-            "total_sudoku": sum(row[1] for row in sudoku_daily),
-            "total_puzzle": sum(row[1] for row in puzzle_daily)
+            "total_sudoku": sum(row[1] for row in sudoku_daily)
         }
         
     except Exception as e:
@@ -404,8 +364,6 @@ async def on_game_completed(
         # Находим игру
         if game_type == "sudoku":
             game = session.get(SudokuGame, game_id)
-        else:
-            game = session.get(PuzzleGame, game_id)
         
         if not game or not game.is_completed:
             return {"status": "ignored", "reason": "Game not found or not completed"}

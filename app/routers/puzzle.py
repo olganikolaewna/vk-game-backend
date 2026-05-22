@@ -14,6 +14,30 @@ AI_SERVICE_URL = "http://91.227.68.140:8000"
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+FALLBACK_PUZZLES = {
+    "easy": {
+        "image_url": "https://picsum.photos/id/104/800/600",
+        "width": 800,
+        "height": 600,
+        "pieces_rows": 3,
+        "pieces_cols": 3
+    },
+    "medium": {
+        "image_url": "https://picsum.photos/id/42/800/600",
+        "width": 800,
+        "height": 600,
+        "pieces_rows": 4,
+        "pieces_cols": 4
+    },
+    "hard": {
+        "image_url": "https://picsum.photos/id/15/800/600",
+        "width": 800,
+        "height": 600,
+        "pieces_rows": 6,
+        "pieces_cols": 6
+    }
+}
+
 # ============================================
 # Модели запросов/ответов
 # ============================================
@@ -97,6 +121,7 @@ async def new_puzzle_game(
     """
     Создать новую игру-пазл.
     Генерирует изображение через внешний ИИ-сервис.
+    При недоступности ИИ-сервиса возвращает fallback-изображение.
     """
     user = await get_or_create_user(vk_user_id, session)
     
@@ -130,7 +155,7 @@ async def new_puzzle_game(
                 pieces_rows=pieces_rows,
                 pieces_cols=pieces_cols,
                 difficulty=difficulty,
-                current_state=json.dumps(initial_state),  # Сохраняем начальное состояние
+                current_state=json.dumps(initial_state),
                 created_at=datetime.utcnow()
             )
             session.add(new_game)
@@ -150,15 +175,47 @@ async def new_puzzle_game(
                 "difficulty": difficulty
             }
             
-    except httpx.TimeoutException:
-        logger.error("Puzzle generation timeout")
-        raise HTTPException(status_code=504, detail="AI service timeout")
-    except httpx.HTTPStatusError as e:
-        logger.error(f"AI service error: {e}")
-        raise HTTPException(status_code=503, detail=f"AI service error: {e.response.status_code}")
-    except Exception as e:
-        logger.error(f"Puzzle generation error: {e}", exc_info=True)
-        raise HTTPException(status_code=503, detail=f"Puzzle service unavailable: {str(e)}")
+    except (httpx.TimeoutException, httpx.HTTPStatusError, Exception) as e:
+        logger.warning(f"AI service unavailable, using fallback puzzle: {e}")
+        
+        # Берём fallback-данные для указанной сложности
+        fallback = FALLBACK_PUZZLES.get(difficulty, FALLBACK_PUZZLES["medium"])
+        content_id = f"fallback_{difficulty}_{datetime.utcnow().timestamp()}"
+        
+        pieces_rows = fallback["pieces_rows"]
+        pieces_cols = fallback["pieces_cols"]
+        initial_state = get_default_pieces_state(pieces_rows, pieces_cols)
+        
+        # Сохраняем fallback-игру
+        new_game = PuzzleGame(
+            user_id=user.id,
+            content_id=content_id,
+            image_data=fallback["image_url"],
+            width=fallback["width"],
+            height=fallback["height"],
+            pieces_rows=pieces_rows,
+            pieces_cols=pieces_cols,
+            difficulty=difficulty,
+            current_state=json.dumps(initial_state),
+            created_at=datetime.utcnow()
+        )
+        session.add(new_game)
+        session.commit()
+        session.refresh(new_game)
+        
+        logger.info(f"Created fallback puzzle game {new_game.id} for user {vk_user_id}")
+        
+        return {
+            "game_id": new_game.id,
+            "content_id": content_id,
+            "image_url": fallback["image_url"],
+            "width": fallback["width"],
+            "height": fallback["height"],
+            "pieces_rows": pieces_rows,
+            "pieces_cols": pieces_cols,
+            "difficulty": difficulty,
+            "fallback": True
+        }
 
 
 @router.get("/puzzle/{game_id}")
@@ -360,24 +417,10 @@ async def complete_puzzle(
         logger.warning(f"Position check failed but all placed=true, accepting completion for game {game_id}")
         # Всё равно засчитываем победу
     
-    # ========== НАЧИСЛЕНИЕ ОЧКОВ ==========
-    game.is_completed = True
-    game.completed_at = datetime.utcnow()
-    
-    difficulty_scores = {"easy": 15, "medium": 30, "hard": 50}
-    score = difficulty_scores.get(game.difficulty, 20)
-    user.rating += score
-    
-    session.add(user)
-    session.add(game)
-    session.commit()
-    
-    logger.info(f"Puzzle {game_id} completed by user {vk_user_id}, earned {score} points")
     
     return {
         "success": True,
-        "score_earned": score,
-        "message": f"Пазл решён! +{score} к рейтингу"
+        "message": f"Пазл решён!"
     }
 
 
