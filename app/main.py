@@ -81,7 +81,7 @@ async def detailed_health_check(session: Session = Depends(get_session)):
     # Проверка ИИ-сервиса
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            r = await client.get(f"{AI_SERVICE_URL}/health")
+            r = await client.get(f"{AI_SERVICE_URL}/api/v1/health")
             if r.status_code == 200:
                 status["ai_service"] = "ok"
             else:

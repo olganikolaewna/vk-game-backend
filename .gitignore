@@ -11,6 +11,8 @@ env.bak/
 venv.bak/
 pythonenv*
 
+pytest.ini
+tests/
 
 # IDE
 .vscode/
@@ -21,7 +23,6 @@ pythonenv*
 # Database
 *.db-journal
 
-# Hugging Face specific
 .gitattributes
 .DS_Store
 
