@@ -100,9 +100,9 @@ async def new_sudoku_game(
     user = await get_or_create_user(vk_user_id, session)
     
     # Получаем адаптированную сложность (считаем по последним 20 играм)
-    if player_skill is None:
-        player_skill = user.skill_level
-        logger.info(f"player_skill not provided, using from DB: {player_skill}")
+
+    player_skill = user.skill_level
+    logger.info(f"player_skill not provided, using from DB: {player_skill}")
     
     adaptation = await AdaptiveDifficulty.get_adaptive_difficulty(
         vk_user_id=vk_user_id,
@@ -123,7 +123,7 @@ async def new_sudoku_game(
     
     logger.info(f"Creating game: user={vk_user_id}, difficulty={final_difficulty}, skill={skill_level}, "
                 f"analyzed {adaptation.get('games_analyzed', 0)} recent games")
-    
+    logger.info(f"🔍 REQUEST TO AI: game_type=sudoku, difficulty={final_difficulty}, player_skill={skill_level}")
     # Запрашиваем у ИИ-сервиса
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -135,12 +135,15 @@ async def new_sudoku_game(
                 "custom_params": {}
             }
             
+            logger.info(f"📤 Full request body: {request_body}")
+    
             response = await client.post(
                 f"{AI_SERVICE_URL}/api/v1/generate",
                 json=request_body
             )
             response.raise_for_status()
             data = response.json()
+            logger.info(f"📥 AI response difficulty: {data.get('difficulty')}")
             
             puzzle_grid = data["data"]["puzzle"]
             solution_grid = data["data"]["solution"]
