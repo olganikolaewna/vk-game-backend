@@ -100,7 +100,9 @@ async def new_sudoku_game(
     user = await get_or_create_user(vk_user_id, session)
     
     # Получаем адаптированную сложность (считаем по последним 20 играм)
-
+    if player_skill is None:
+        player_skill = user.skill_level
+        logger.info(f"player_skill not provided, using from DB: {player_skill}")
     
     adaptation = await AdaptiveDifficulty.get_adaptive_difficulty(
         vk_user_id=vk_user_id,

@@ -396,6 +396,7 @@ class AdaptiveDifficulty:
             "requested": requested_difficulty,
             "message": f"Игра создана на уровне {final_difficulty}"
         }
+    
     @classmethod
     def suggest_next_difficulty(cls, user_id: int, session: Session) -> Dict:
         """Предложить следующую сложность"""
