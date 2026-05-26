@@ -94,8 +94,8 @@ async def new_sudoku_game(
 ):
     """
     Создать новую игру Судоку
-    🔥 Автоматически переводит на разрешенный уровень
-    🔥 Адаптация работает на основе последних 20 игр
+    Автоматически переводит на разрешенный уровень
+    Адаптация работает на основе последних 20 игр
     """
     user = await get_or_create_user(vk_user_id, session)
     
@@ -107,11 +107,10 @@ async def new_sudoku_game(
         requested_difficulty=difficulty,
         session=session,
         client_skill=player_skill,
-        auto_adjust=True,           # Явно включаем адаптацию
-        recent_games_limit=20       # Анализируем последние 20 игр
+        auto_adjust=True,           
+        recent_games_limit=20       
     )
     
-    # Берем итоговую сложность (уже адаптированную)
     final_difficulty = adaptation["difficulty"]
     was_adjusted = adaptation["was_adjusted"]
     skill_level = adaptation["skill_level"]

@@ -12,27 +12,6 @@ logger = logging.getLogger(__name__)
 class AdaptiveDifficulty:
     """Адаптивная система подбора сложности для Судоку"""
     
-    # Пороги для перехода между уровнями
-    SKILL_THRESHOLDS = {
-        "beginner": {
-            "next": "intermediate",
-            "min_games": 10,
-            "required_win_rate": 70,
-            "allowed_difficulties": ["easy"]
-        },
-        "intermediate": {
-            "next": "advanced",
-            "min_games": 10,
-            "required_win_rate": 60,
-            "allowed_difficulties": ["easy", "medium"]
-        },
-        "advanced": {
-            "next": None,
-            "min_games": 0,
-            "required_win_rate": 0,
-            "allowed_difficulties": ["easy", "medium", "hard"]
-        }
-    }
     
     # Поражение считается если игра не завершена через N часов
     LOSS_AFTER_HOURS = 24
@@ -360,9 +339,7 @@ class AdaptiveDifficulty:
         # Получаем общую статистику для отображения
         all_games, all_stats = cls.get_relevant_games_with_results(user.id, session, recent_games_limit)
         
-        thresholds = cls.SKILL_THRESHOLDS.get(skill_level, cls.SKILL_THRESHOLDS["beginner"])
-        allowed_difficulties = thresholds["allowed_difficulties"]
-        
+        # Формируем информацию о повышении уровня
         if skill_level == "beginner":
             promotion_info = {
                 "easy_games_played": stats["total_games"],
@@ -392,17 +369,15 @@ class AdaptiveDifficulty:
             promotion_info = {"message": "Вы достигли максимального уровня!"}
             display_win_rate = all_stats["win_rate"]
         
+        # Адаптацию сложности выполняет ИИ-сервис на основе player_skill
+        # Поэтому здесь просто передаём запрошенную сложность без изменений
         final_difficulty = requested_difficulty
         was_adjusted = False
         reason = ""
         detailed_reason = ""
         
-        if auto_adjust:
-            if requested_difficulty not in allowed_difficulties:
-                final_difficulty = thresholds["allowed_difficulties"][-1]
-                was_adjusted = True
-                reason = f"Сложность '{requested_difficulty}' недоступна для вашего уровня ({skill_level})"
-                detailed_reason = f"Доступны: {', '.join(allowed_difficulties)}"
+        # Для совместимости с фронтендом возвращаем все доступные сложности
+        allowed_difficulties = ["easy", "medium", "hard"]
         
         return {
             "difficulty": final_difficulty,
@@ -419,10 +394,8 @@ class AdaptiveDifficulty:
             "reason": reason,
             "detailed_reason": detailed_reason,
             "requested": requested_difficulty,
-            "message": f"Автоматически изменено с {requested_difficulty} на {final_difficulty}" if was_adjusted 
-                      else f"Игра создана на уровне {final_difficulty}"
+            "message": f"Игра создана на уровне {final_difficulty}"
         }
-    
     @classmethod
     def suggest_next_difficulty(cls, user_id: int, session: Session) -> Dict:
         """Предложить следующую сложность"""
