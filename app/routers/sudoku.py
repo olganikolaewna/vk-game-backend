@@ -113,23 +113,18 @@ async def new_sudoku_game(
         recent_games_limit=20       
     )
     
-    final_difficulty = adaptation["difficulty"]
-    was_adjusted = adaptation["was_adjusted"]
+    requested_for_ai = adaptation["difficulty"]
     skill_level = adaptation["skill_level"]
     allowed_difficulties = adaptation.get("allowed_difficulties", ["easy"])
-    
-    if was_adjusted:
-        logger.info(f"User {vk_user_id} (skill: {skill_level}) requested {difficulty}, auto-adjusted to {final_difficulty}")
-    
-    logger.info(f"Creating game: user={vk_user_id}, difficulty={final_difficulty}, skill={skill_level}, "
-                f"analyzed {adaptation.get('games_analyzed', 0)} recent games")
-    logger.info(f"🔍 REQUEST TO AI: game_type=sudoku, difficulty={final_difficulty}, player_skill={skill_level}")
+    was_adjusted = adaptation["was_adjusted"]
+
+
     # Запрашиваем у ИИ-сервиса
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             request_body = {
                 "game_type": "sudoku",
-                "difficulty": final_difficulty,
+                "difficulty": requested_for_ai,
                 "player_skill": skill_level,
                 "prompt": "",
                 "custom_params": {}
@@ -147,6 +142,8 @@ async def new_sudoku_game(
             
             puzzle_grid = data["data"]["puzzle"]
             solution_grid = data["data"]["solution"]
+
+            actual_difficulty = data.get("difficulty", requested_for_ai)
             
     except Exception as e:
         logger.error(f"AI service error, using fallback: {e}")
@@ -159,7 +156,7 @@ async def new_sudoku_game(
         user_id=user.id,
         puzzle=json.dumps(puzzle_grid),
         solution=json.dumps(solution_grid),
-        difficulty=final_difficulty,
+        difficulty=actual_difficulty,
         created_at=datetime.utcnow()
     )
     session.add(new_game)
@@ -173,7 +170,7 @@ async def new_sudoku_game(
     return {
         "game_id": new_game.id,
         "puzzle": puzzle_grid,
-        "difficulty": final_difficulty,
+        "difficulty": actual_difficulty,
         "player_skill_used": skill_level,
         "was_adjusted": was_adjusted,
         "requested_difficulty": difficulty if was_adjusted else None,
@@ -190,7 +187,7 @@ async def new_sudoku_game(
             "next_skill": promotion_info.get("next_skill"),
             "reason": adaptation.get("reason", ""),
             "detailed_reason": adaptation.get("detailed_reason", ""),
-            "message": f"Автоматически изменено с {difficulty} на {final_difficulty}" if was_adjusted else f"Игра создана на уровне {final_difficulty}"
+            "message": f"Автоматически изменено с {difficulty} на {actual_difficulty}" if was_adjusted else f"Игра создана на уровне {actual_difficulty}"
         }
     }
 
