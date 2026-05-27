@@ -207,8 +207,7 @@ async def make_move(
 ):
     """
     Сделать ход в судоку.
-    Сохраняет значение в current_board БЕЗ проверки правильности.
-    Проверка правильности выполняется только в эндпоинте /check.
+    Проверяет правильность хода и сохраняет его в current_board.
     """
     # Валидация входных данных
     if not (0 <= row <= 8 and 0 <= col <= 8):
@@ -232,6 +231,7 @@ async def make_move(
     
     # Загружаем данные игры
     puzzle = json.loads(game.puzzle)
+    solution = json.loads(game.solution)  # <-- ДОБАВИТЬ: загружаем решение
     current_board = json.loads(game.current_board) if game.current_board else json.loads(game.puzzle)
     
     # Проверка: можно ли менять эту клетку (изначально заданные клетки нельзя менять)
@@ -241,24 +241,48 @@ async def make_move(
             detail=f"Клетка [{row}, {col}] была заполнена изначально, её нельзя менять"
         )
     
-    # Сохраняем ход (даже если значение 0 — стирание)
+    # <--- ДОБАВИТЬ: Проверка правильности хода --->
+    is_valid = (solution[row][col] == value)
+    
+    # Если цифра неправильная, НЕ сохраняем её, а возвращаем ошибку
+    if not is_valid:
+        return {
+            "success": False,
+            "valid": False,
+            "message": f"✗ Неправильно. Правильная цифра: {solution[row][col]}",
+            "row": row,
+            "col": col,
+            "value": value,
+            "correct_value": solution[row][col],
+            "cells_filled": sum(1 for row_board in current_board for cell in row_board if cell != 0),
+            "cells_total": 81,
+            "is_completed": False
+        }
+    
+    # Сохраняем ход (только если он правильный)
     if value == 0:
         current_board[row][col] = 0
         message = f"Клетка [{row}, {col}] очищена"
     else:
         current_board[row][col] = value
-        message = f"Цифра {value} поставлена в клетку [{row}, {col}]"
+        message = f"✓ Правильно! Цифра {value} поставлена в клетку [{row}, {col}]"
     
     # Обновляем доску
     game.current_board = json.dumps(current_board)
+    
+    # Проверяем, не завершена ли игра
+    cells_filled = sum(1 for row_board in current_board for cell in row_board if cell != 0)
+    if cells_filled == 81:
+        game.is_completed = True
+        game.completed_at = datetime.utcnow()
+        message = "🎉 Поздравляем! Вы решили судоку!"
+    
     session.add(game)
     session.commit()
     
-    # Подсчитываем количество заполненных клеток
-    cells_filled = sum(1 for row_board in current_board for cell in row_board if cell != 0)
-    
     return {
         "success": True,
+        "valid": True,
         "message": message,
         "row": row,
         "col": col,
@@ -268,7 +292,6 @@ async def make_move(
         "cells_total": 81,
         "is_completed": game.is_completed
     }
-
 
 # ============================================
 # ИСПРАВЛЕННЫЙ ЭНДПОИНТ HINT
@@ -659,49 +682,4 @@ async def get_game_state(
         "difficulty": game.difficulty
     }
 
-@router.post("/sudoku/{game_id}/validate")
-async def validate_move(
-    game_id: int,
-    vk_user_id: str,
-    row: int,
-    col: int,
-    value: int,
-    session: Session = Depends(get_session)
-):
-    """
-    Проверить, правильная ли цифра (без сохранения).
-    Это отдельный эндпоинт для проверки конкретной клетки.
-    """
-    if not (0 <= row <= 8 and 0 <= col <= 8):
-        raise HTTPException(status_code=400, detail="Некорректные координаты (должны быть от 0 до 8)")
-    
-    if not (1 <= value <= 9):
-        raise HTTPException(status_code=400, detail="Цифра должна быть от 1 до 9")
-    
-    user = await get_or_create_user(vk_user_id, session)
-    game = session.get(SudokuGame, game_id)
-    
-    if not game:
-        raise HTTPException(status_code=404, detail="Игра не найдена")
-    
-    if game.user_id != user.id:
-        raise HTTPException(status_code=403, detail="Это не ваша игра")
-    
-    puzzle = json.loads(game.puzzle)
-    if puzzle[row][col] != 0:
-        return {
-            "valid": False,
-            "message": "Эта клетка была заполнена изначально, её нельзя менять"
-        }
-    
-    solution = json.loads(game.solution)
-    is_valid = (solution[row][col] == value)
-    
-    return {
-        "valid": is_valid,
-        "row": row,
-        "col": col,
-        "value": value,
-        "correct_value": solution[row][col] if not is_valid else None,
-        "message": "✓ Правильно!" if is_valid else f"✗ Неправильно. Правильная цифра: {solution[row][col]}"
-    }
+
