@@ -231,7 +231,7 @@ async def make_move(
     
     # Загружаем данные игры
     puzzle = json.loads(game.puzzle)
-    solution = json.loads(game.solution)  # <-- ДОБАВИТЬ: загружаем решение
+    solution = json.loads(game.solution)
     current_board = json.loads(game.current_board) if game.current_board else json.loads(game.puzzle)
     
     # Проверка: можно ли менять эту клетку (изначально заданные клетки нельзя менять)
@@ -241,11 +241,34 @@ async def make_move(
             detail=f"Клетка [{row}, {col}] была заполнена изначально, её нельзя менять"
         )
     
-    # <--- ДОБАВИТЬ: Проверка правильности хода --->
+    # Очистка клетки (value=0) — всегда разрешена, проверка не нужна
+    if value == 0:
+        current_board[row][col] = 0
+        game.current_board = json.dumps(current_board)
+        session.add(game)
+        session.commit()
+        
+        cells_filled = sum(1 for row_board in current_board for cell in row_board if cell != 0)
+        
+        return {
+            "success": True,
+            "valid": True,
+            "message": f"Клетка [{row}, {col}] очищена",
+            "row": row,
+            "col": col,
+            "value": None,
+            "cleared": True,
+            "cells_filled": cells_filled,
+            "cells_total": 81,
+            "is_completed": False
+        }
+    
+    # Проверка правильности хода (только для вставки цифры)
     is_valid = (solution[row][col] == value)
     
-    # Если цифра неправильная, НЕ сохраняем её, а возвращаем ошибку
     if not is_valid:
+        # Неправильный ход — не сохраняем, возвращаем ошибку
+        cells_filled = sum(1 for row_board in current_board for cell in row_board if cell != 0)
         return {
             "success": False,
             "valid": False,
@@ -254,28 +277,26 @@ async def make_move(
             "col": col,
             "value": value,
             "correct_value": solution[row][col],
-            "cells_filled": sum(1 for row_board in current_board for cell in row_board if cell != 0),
+            "cleared": False,
+            "cells_filled": cells_filled,
             "cells_total": 81,
             "is_completed": False
         }
     
-    # Сохраняем ход (только если он правильный)
-    if value == 0:
-        current_board[row][col] = 0
-        message = f"Клетка [{row}, {col}] очищена"
-    else:
-        current_board[row][col] = value
-        message = f"✓ Правильно! Цифра {value} поставлена в клетку [{row}, {col}]"
-    
-    # Обновляем доску
+    # Сохраняем правильный ход
+    current_board[row][col] = value
     game.current_board = json.dumps(current_board)
     
-    # Проверяем, не завершена ли игра
+    # Подсчитываем заполненные клетки
     cells_filled = sum(1 for row_board in current_board for cell in row_board if cell != 0)
-    if cells_filled == 81:
-        game.is_completed = True
-        game.completed_at = datetime.utcnow()
-        message = "🎉 Поздравляем! Вы решили судоку!"
+    
+    # Проверяем, не завершена ли игра
+    is_game_completed = False
+    message = f"✓ Правильно! Цифра {value} поставлена в клетку [{row}, {col}]"
+    
+    # Если все клетки заполнены, НО проверку правильности делает эндпоинт /check
+    # Здесь только сохраняем ход, но не завершаем игру автоматически
+    # (это можно оставить как опцию, но лучше чтобы /check занимался завершением)
     
     session.add(game)
     session.commit()
@@ -286,8 +307,8 @@ async def make_move(
         "message": message,
         "row": row,
         "col": col,
-        "value": value if value != 0 else None,
-        "cleared": (value == 0),
+        "value": value,
+        "cleared": False,
         "cells_filled": cells_filled,
         "cells_total": 81,
         "is_completed": game.is_completed
