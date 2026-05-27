@@ -659,4 +659,49 @@ async def get_game_state(
         "difficulty": game.difficulty
     }
 
-
+@router.post("/sudoku/{game_id}/validate")
+async def validate_move(
+    game_id: int,
+    vk_user_id: str,
+    row: int,
+    col: int,
+    value: int,
+    session: Session = Depends(get_session)
+):
+    """
+    Проверить, правильная ли цифра (без сохранения).
+    Это отдельный эндпоинт для проверки конкретной клетки.
+    """
+    if not (0 <= row <= 8 and 0 <= col <= 8):
+        raise HTTPException(status_code=400, detail="Некорректные координаты (должны быть от 0 до 8)")
+    
+    if not (1 <= value <= 9):
+        raise HTTPException(status_code=400, detail="Цифра должна быть от 1 до 9")
+    
+    user = await get_or_create_user(vk_user_id, session)
+    game = session.get(SudokuGame, game_id)
+    
+    if not game:
+        raise HTTPException(status_code=404, detail="Игра не найдена")
+    
+    if game.user_id != user.id:
+        raise HTTPException(status_code=403, detail="Это не ваша игра")
+    
+    puzzle = json.loads(game.puzzle)
+    if puzzle[row][col] != 0:
+        return {
+            "valid": False,
+            "message": "Эта клетка была заполнена изначально, её нельзя менять"
+        }
+    
+    solution = json.loads(game.solution)
+    is_valid = (solution[row][col] == value)
+    
+    return {
+        "valid": is_valid,
+        "row": row,
+        "col": col,
+        "value": value,
+        "correct_value": solution[row][col] if not is_valid else None,
+        "message": "✓ Правильно!" if is_valid else f"✗ Неправильно. Правильная цифра: {solution[row][col]}"
+    }
