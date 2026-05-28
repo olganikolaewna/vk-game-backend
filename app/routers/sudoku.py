@@ -94,8 +94,7 @@ async def new_sudoku_game(
 ):
     """
     Создать новую игру Судоку
-    Автоматически переводит на разрешенный уровень
-    Адаптация работает на основе последних 20 игр
+
     """
     user = await get_or_create_user(vk_user_id, session)
     
@@ -241,27 +240,7 @@ async def make_move(
             detail=f"Клетка [{row}, {col}] была заполнена изначально, её нельзя менять"
         )
     
-    # Очистка клетки (value=0) — всегда разрешена, проверка не нужна
-    if value == 0:
-        current_board[row][col] = 0
-        game.current_board = json.dumps(current_board)
-        session.add(game)
-        session.commit()
-        
-        cells_filled = sum(1 for row_board in current_board for cell in row_board if cell != 0)
-        
-        return {
-            "success": True,
-            "valid": True,
-            "message": f"Клетка [{row}, {col}] очищена",
-            "row": row,
-            "col": col,
-            "value": None,
-            "cleared": True,
-            "cells_filled": cells_filled,
-            "cells_total": 81,
-            "is_completed": False
-        }
+    
     
     # Проверка правильности хода (только для вставки цифры)
     is_valid = (solution[row][col] == value)
@@ -330,7 +309,7 @@ async def get_hint(
     session: Session = Depends(get_session)
 ):
     """
-    Получить подсказку (случайная пустая клетка + засчитывается как ход)
+    Получить подсказку 
     """
     try:
         # Получаем или создаём пользователя
@@ -491,7 +470,6 @@ async def check_solution(
     """
     Проверить решение судоку.
     Берет current_board из БД и сверяет с solution.
-    ТОЛЬКО ЗДЕСЬ происходит проверка правильности!
     """
     user = await get_or_create_user(vk_user_id, session)
     game = session.get(SudokuGame, game_id)

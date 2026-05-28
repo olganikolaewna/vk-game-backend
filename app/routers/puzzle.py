@@ -121,7 +121,7 @@ async def new_puzzle_game(
     """
     Создать новую игру-пазл.
     Генерирует изображение через внешний ИИ-сервис.
-    При недоступности ИИ-сервиса возвращает fallback-изображение.
+
     """
     user = await get_or_create_user(vk_user_id, session)
     
