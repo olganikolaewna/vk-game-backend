@@ -239,34 +239,144 @@ async def new_puzzle_game(
             "fallback": True
         }
 
-# @router.get("/puzzle/{game_id}")
-# async def get_puzzle_info(
-#     game_id: int,
-#     vk_user_id: str,
-#     session: Session = Depends(get_session)
-# ):
-#     """
-#     Получить базовую информацию об игре-пазл
-#     """
-#     user = await get_or_create_user(vk_user_id, session)
-#     game = session.get(PuzzleGame, game_id)
+# ============================================
+# ПРОКСИ-ЭНДПОИНТЫ ДЛЯ РАБОТЫ С ТЕМАМИ (перенаправление к ИИ-сервису)
+# ============================================
+
+@router.get("/puzzle/themes")
+async def get_all_themes():
+    """
+    Получить все темы для пазлов (прокси к ИИ-сервису)
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{AI_SERVICE_URL}/api/v1/themes")
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        logger.error(f"Failed to fetch themes: {e}")
+        raise HTTPException(status_code=503, detail="AI service unavailable")
+
+
+@router.get("/puzzle/themes/categories")
+async def get_themes_categories():
+    """
+    Получить список всех категорий для пазлов (прокси к ИИ-сервису)
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{AI_SERVICE_URL}/api/v1/themes/categories")
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        logger.error(f"Failed to fetch categories: {e}")
+        # Fallback-категории на случай недоступности ИИ-сервиса
+        return {
+            "categories": ["Аниме", "Природа", "Космос", "Животные", 
+                          "Фантастика", "Машины", "Спорт", "Еда", 
+                          "Супергерои", "Мультфильмы", "Игры"]
+        }
+
+
+@router.get("/puzzle/themes/by-category")
+async def get_themes_by_category(
+    category: str
+):
+    """
+    Получить темы по категории (прокси к ИИ-сервису)
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                f"{AI_SERVICE_URL}/api/v1/themes/by-category",
+                params={"category": category}
+            )
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        logger.error(f"Failed to fetch themes by category: {e}")
+        raise HTTPException(status_code=503, detail="AI service unavailable")
+
+
+@router.get("/puzzle/themes/random")
+async def get_random_theme():
+    """
+    Получить случайную тему (прокси к ИИ-сервису)
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{AI_SERVICE_URL}/api/v1/themes/random")
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        logger.error(f"Failed to fetch random theme: {e}")
+        # Fallback-тема на случай недоступности ИИ-сервиса
+        return {"theme": "Красивый пейзаж"}
+
+
+@router.get("/puzzle/themes/popular")
+async def get_popular_themes(
+    limit: int = 10
+):
+    """
+    Получить популярные темы (прокси к ИИ-сервису)
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                f"{AI_SERVICE_URL}/api/v1/themes/popular",
+                params={"limit": limit}
+            )
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        logger.error(f"Failed to fetch popular themes: {e}")
+        raise HTTPException(status_code=503, detail="AI service unavailable")
+
+
+@router.get("/puzzle/themes/count")
+async def get_themes_count():
+    """
+    Получить количество тем (прокси к ИИ-сервису)
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{AI_SERVICE_URL}/api/v1/themes/count")
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        logger.error(f"Failed to fetch themes count: {e}")
+        return {"total_themes": 120}
+
+
+@router.get("/puzzle/{game_id}")
+async def get_puzzle_info(
+    game_id: int,
+    vk_user_id: str,
+    session: Session = Depends(get_session)
+):
+    """
+    Получить базовую информацию об игре-пазл
+    """
+    user = await get_or_create_user(vk_user_id, session)
+    game = session.get(PuzzleGame, game_id)
     
-#     if not game or game.user_id != user.id:
-#         raise HTTPException(status_code=404, detail="Game not found")
+    if not game or game.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Game not found")
     
-#     saved_state = json.loads(game.current_state) if game.current_state else []
+    saved_state = json.loads(game.current_state) if game.current_state else []
     
-#     return {
-#         "game_id": game.id,
-#         "image_url": game.image_data,
-#         "width": game.width,
-#         "height": game.height,
-#         "pieces_rows": game.pieces_rows,
-#         "pieces_cols": game.pieces_cols,
-#         "is_completed": game.is_completed,
-#         "has_saved_progress": saved_state is not None and len(saved_state) > 0,
-#         "created_at": game.created_at
-#     }
+    return {
+        "game_id": game.id,
+        "image_url": game.image_data,
+        "width": game.width,
+        "height": game.height,
+        "pieces_rows": game.pieces_rows,
+        "pieces_cols": game.pieces_cols,
+        "is_completed": game.is_completed,
+        "has_saved_progress": saved_state is not None and len(saved_state) > 0,
+        "created_at": game.created_at
+    }
 
 
 @router.get("/puzzle/{game_id}/load-state")
@@ -483,111 +593,3 @@ async def get_user_puzzle_games(
         ]
     }
 
-# ============================================
-# ПРОКСИ-ЭНДПОИНТЫ ДЛЯ РАБОТЫ С ТЕМАМИ (перенаправление к ИИ-сервису)
-# ============================================
-
-@router.get("/puzzle/themes")
-async def get_all_themes():
-    """
-    Получить все темы для пазлов (прокси к ИИ-сервису)
-    """
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(f"{AI_SERVICE_URL}/api/v1/themes")
-            response.raise_for_status()
-            return response.json()
-    except Exception as e:
-        logger.error(f"Failed to fetch themes: {e}")
-        raise HTTPException(status_code=503, detail="AI service unavailable")
-
-
-@router.get("/puzzle/themes/categories")
-async def get_themes_categories():
-    """
-    Получить список всех категорий для пазлов (прокси к ИИ-сервису)
-    """
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(f"{AI_SERVICE_URL}/api/v1/themes/categories")
-            response.raise_for_status()
-            return response.json()
-    except Exception as e:
-        logger.error(f"Failed to fetch categories: {e}")
-        # Fallback-категории на случай недоступности ИИ-сервиса
-        return {
-            "categories": ["Аниме", "Природа", "Космос", "Животные", 
-                          "Фантастика", "Машины", "Спорт", "Еда", 
-                          "Супергерои", "Мультфильмы", "Игры"]
-        }
-
-
-@router.get("/puzzle/themes/by-category")
-async def get_themes_by_category(
-    category: str
-):
-    """
-    Получить темы по категории (прокси к ИИ-сервису)
-    """
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(
-                f"{AI_SERVICE_URL}/api/v1/themes/by-category",
-                params={"category": category}
-            )
-            response.raise_for_status()
-            return response.json()
-    except Exception as e:
-        logger.error(f"Failed to fetch themes by category: {e}")
-        raise HTTPException(status_code=503, detail="AI service unavailable")
-
-
-@router.get("/puzzle/themes/random")
-async def get_random_theme():
-    """
-    Получить случайную тему (прокси к ИИ-сервису)
-    """
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(f"{AI_SERVICE_URL}/api/v1/themes/random")
-            response.raise_for_status()
-            return response.json()
-    except Exception as e:
-        logger.error(f"Failed to fetch random theme: {e}")
-        # Fallback-тема на случай недоступности ИИ-сервиса
-        return {"theme": "Красивый пейзаж"}
-
-
-@router.get("/puzzle/themes/popular")
-async def get_popular_themes(
-    limit: int = 10
-):
-    """
-    Получить популярные темы (прокси к ИИ-сервису)
-    """
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(
-                f"{AI_SERVICE_URL}/api/v1/themes/popular",
-                params={"limit": limit}
-            )
-            response.raise_for_status()
-            return response.json()
-    except Exception as e:
-        logger.error(f"Failed to fetch popular themes: {e}")
-        raise HTTPException(status_code=503, detail="AI service unavailable")
-
-
-@router.get("/puzzle/themes/count")
-async def get_themes_count():
-    """
-    Получить количество тем (прокси к ИИ-сервису)
-    """
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(f"{AI_SERVICE_URL}/api/v1/themes/count")
-            response.raise_for_status()
-            return response.json()
-    except Exception as e:
-        logger.error(f"Failed to fetch themes count: {e}")
-        return {"total_themes": 120}
