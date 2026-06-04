@@ -112,27 +112,150 @@ def get_default_pieces_state(rows: int, cols: int) -> List[Dict[str, Any]]:
 # Основные эндпоинты
 # ============================================
 
+# @router.post("/puzzle/new")
+# async def new_puzzle_game(
+#     vk_user_id: str,
+#     difficulty: str = "medium",
+#     session: Session = Depends(get_session)
+# ):
+#     """
+#     Создать новую игру-пазл.
+#     Генерирует изображение через внешний ИИ-сервис.
+
+#     """
+#     user = await get_or_create_user(vk_user_id, session)
+    
+#     try:
+#         async with httpx.AsyncClient(timeout=30.0) as client:
+#             response = await client.post(
+#                 f"{AI_SERVICE_URL}/api/v1/generate",
+#                 json={
+#                     "game_type": "puzzle",
+#                     "difficulty": difficulty
+#                 }
+#             )
+#             response.raise_for_status()
+#             data = response.json()
+            
+#             # Извлекаем данные пазла
+#             puzzle_data = data["data"]
+            
+#             # Создаём начальное состояние пазла
+#             pieces_rows = puzzle_data.get("pieces_rows", 3)
+#             pieces_cols = puzzle_data.get("pieces_cols", 4)
+#             initial_state = get_default_pieces_state(pieces_rows, pieces_cols)
+            
+#             # Сохраняем игру в БД
+#             new_game = PuzzleGame(
+#                 user_id=user.id,
+#                 content_id=data["content_id"],
+#                 image_data=puzzle_data["image_url"],
+#                 width=puzzle_data["width"],
+#                 height=puzzle_data["height"],
+#                 pieces_rows=pieces_rows,
+#                 pieces_cols=pieces_cols,
+#                 difficulty=difficulty,
+#                 current_state=json.dumps(initial_state),
+#                 created_at=datetime.utcnow()
+#             )
+#             session.add(new_game)
+#             session.commit()
+#             session.refresh(new_game)
+            
+#             logger.info(f"Created new puzzle game {new_game.id} for user {vk_user_id}")
+            
+#             return {
+#                 "game_id": new_game.id,
+#                 "content_id": new_game.content_id,
+#                 "image_url": puzzle_data["image_url"],
+#                 "width": puzzle_data["width"],
+#                 "height": puzzle_data["height"],
+#                 "pieces_rows": pieces_rows,
+#                 "pieces_cols": pieces_cols,
+#                 "difficulty": difficulty
+#             }
+            
+#     except (httpx.TimeoutException, httpx.HTTPStatusError, Exception) as e:
+#         logger.warning(f"AI service unavailable, using fallback puzzle: {e}")
+        
+#         # Берём fallback-данные для указанной сложности
+#         fallback = FALLBACK_PUZZLES.get(difficulty, FALLBACK_PUZZLES["medium"])
+#         content_id = f"fallback_{difficulty}_{datetime.utcnow().timestamp()}"
+        
+#         pieces_rows = fallback["pieces_rows"]
+#         pieces_cols = fallback["pieces_cols"]
+#         initial_state = get_default_pieces_state(pieces_rows, pieces_cols)
+        
+#         # Сохраняем fallback-игру
+#         new_game = PuzzleGame(
+#             user_id=user.id,
+#             content_id=content_id,
+#             image_data=fallback["image_url"],
+#             width=fallback["width"],
+#             height=fallback["height"],
+#             pieces_rows=pieces_rows,
+#             pieces_cols=pieces_cols,
+#             difficulty=difficulty,
+#             current_state=json.dumps(initial_state),
+#             created_at=datetime.utcnow()
+#         )
+#         session.add(new_game)
+#         session.commit()
+#         session.refresh(new_game)
+        
+#         logger.info(f"Created fallback puzzle game {new_game.id} for user {vk_user_id}")
+        
+#         return {
+#             "game_id": new_game.id,
+#             "content_id": content_id,
+#             "image_url": fallback["image_url"],
+#             "width": fallback["width"],
+#             "height": fallback["height"],
+#             "pieces_rows": pieces_rows,
+#             "pieces_cols": pieces_cols,
+#             "difficulty": difficulty,
+#             "fallback": True
+#         }
+
 @router.post("/puzzle/new")
 async def new_puzzle_game(
     vk_user_id: str,
     difficulty: str = "medium",
+    category: Optional[str] = None,      # ← НОВЫЙ ПАРАМЕТР: категория темы (например "Аниме")
+    theme_id: Optional[int] = None,      # ← НОВЫЙ ПАРАМЕТР: ID конкретной темы
     session: Session = Depends(get_session)
 ):
     """
     Создать новую игру-пазл.
     Генерирует изображение через внешний ИИ-сервис.
-
+    
+    Параметры:
+    - category: категория темы ("Аниме", "Природа", "Космос" и т.д.)
+    - theme_id: ID конкретной темы из базы данных
     """
     user = await get_or_create_user(vk_user_id, session)
+    
+    # Формируем тело запроса к ИИ-сервису
+    request_body = {
+        "game_type": "puzzle",
+        "difficulty": difficulty
+    }
+    
+    # Добавляем category или theme_id, если они переданы
+    if category:
+        request_body["category"] = category
+        logger.info(f"Generating puzzle with category: {category}")
+    elif theme_id:
+        request_body["theme_id"] = theme_id
+        logger.info(f"Generating puzzle with theme_id: {theme_id}")
+    else:
+        logger.info("Generating puzzle with random theme")
     
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
                 f"{AI_SERVICE_URL}/api/v1/generate",
-                json={
-                    "game_type": "puzzle",
-                    "difficulty": difficulty
-                }
+                json=request_body
             )
             response.raise_for_status()
             data = response.json()
@@ -164,7 +287,8 @@ async def new_puzzle_game(
             
             logger.info(f"Created new puzzle game {new_game.id} for user {vk_user_id}")
             
-            return {
+            # Формируем ответ с дополнительной информацией
+            response_data = {
                 "game_id": new_game.id,
                 "content_id": new_game.content_id,
                 "image_url": puzzle_data["image_url"],
@@ -174,6 +298,14 @@ async def new_puzzle_game(
                 "pieces_cols": pieces_cols,
                 "difficulty": difficulty
             }
+            
+            # Добавляем информацию о категории/теме, если они были использованы
+            if "category" in puzzle_data:
+                response_data["category"] = puzzle_data["category"]
+            if "used_prompt" in puzzle_data:
+                response_data["used_prompt"] = puzzle_data["used_prompt"]
+            
+            return response_data
             
     except (httpx.TimeoutException, httpx.HTTPStatusError, Exception) as e:
         logger.warning(f"AI service unavailable, using fallback puzzle: {e}")
@@ -216,7 +348,6 @@ async def new_puzzle_game(
             "difficulty": difficulty,
             "fallback": True
         }
-
 
 @router.get("/puzzle/{game_id}")
 async def get_puzzle_info(
@@ -461,3 +592,112 @@ async def get_user_puzzle_games(
             for game in games
         ]
     }
+
+# ============================================
+# ПРОКСИ-ЭНДПОИНТЫ ДЛЯ РАБОТЫ С ТЕМАМИ (перенаправление к ИИ-сервису)
+# ============================================
+
+@router.get("/puzzle/themes")
+async def get_all_themes():
+    """
+    Получить все темы для пазлов (прокси к ИИ-сервису)
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{AI_SERVICE_URL}/api/v1/themes")
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        logger.error(f"Failed to fetch themes: {e}")
+        raise HTTPException(status_code=503, detail="AI service unavailable")
+
+
+@router.get("/puzzle/themes/categories")
+async def get_themes_categories():
+    """
+    Получить список всех категорий для пазлов (прокси к ИИ-сервису)
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{AI_SERVICE_URL}/api/v1/themes/categories")
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        logger.error(f"Failed to fetch categories: {e}")
+        # Fallback-категории на случай недоступности ИИ-сервиса
+        return {
+            "categories": ["Аниме", "Природа", "Космос", "Животные", 
+                          "Фантастика", "Машины", "Спорт", "Еда", 
+                          "Супергерои", "Мультфильмы", "Игры"]
+        }
+
+
+@router.get("/puzzle/themes/by-category")
+async def get_themes_by_category(
+    category: str
+):
+    """
+    Получить темы по категории (прокси к ИИ-сервису)
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                f"{AI_SERVICE_URL}/api/v1/themes/by-category",
+                params={"category": category}
+            )
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        logger.error(f"Failed to fetch themes by category: {e}")
+        raise HTTPException(status_code=503, detail="AI service unavailable")
+
+
+@router.get("/puzzle/themes/random")
+async def get_random_theme():
+    """
+    Получить случайную тему (прокси к ИИ-сервису)
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{AI_SERVICE_URL}/api/v1/themes/random")
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        logger.error(f"Failed to fetch random theme: {e}")
+        # Fallback-тема на случай недоступности ИИ-сервиса
+        return {"theme": "Красивый пейзаж"}
+
+
+@router.get("/puzzle/themes/popular")
+async def get_popular_themes(
+    limit: int = 10
+):
+    """
+    Получить популярные темы (прокси к ИИ-сервису)
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                f"{AI_SERVICE_URL}/api/v1/themes/popular",
+                params={"limit": limit}
+            )
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        logger.error(f"Failed to fetch popular themes: {e}")
+        raise HTTPException(status_code=503, detail="AI service unavailable")
+
+
+@router.get("/puzzle/themes/count")
+async def get_themes_count():
+    """
+    Получить количество тем (прокси к ИИ-сервису)
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{AI_SERVICE_URL}/api/v1/themes/count")
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        logger.error(f"Failed to fetch themes count: {e}")
+        return {"total_themes": 120}
