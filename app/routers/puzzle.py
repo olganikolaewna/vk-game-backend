@@ -112,117 +112,12 @@ def get_default_pieces_state(rows: int, cols: int) -> List[Dict[str, Any]]:
 # Основные эндпоинты
 # ============================================
 
-# @router.post("/puzzle/new")
-# async def new_puzzle_game(
-#     vk_user_id: str,
-#     difficulty: str = "medium",
-#     session: Session = Depends(get_session)
-# ):
-#     """
-#     Создать новую игру-пазл.
-#     Генерирует изображение через внешний ИИ-сервис.
-
-#     """
-#     user = await get_or_create_user(vk_user_id, session)
-    
-#     try:
-#         async with httpx.AsyncClient(timeout=30.0) as client:
-#             response = await client.post(
-#                 f"{AI_SERVICE_URL}/api/v1/generate",
-#                 json={
-#                     "game_type": "puzzle",
-#                     "difficulty": difficulty
-#                 }
-#             )
-#             response.raise_for_status()
-#             data = response.json()
-            
-#             # Извлекаем данные пазла
-#             puzzle_data = data["data"]
-            
-#             # Создаём начальное состояние пазла
-#             pieces_rows = puzzle_data.get("pieces_rows", 3)
-#             pieces_cols = puzzle_data.get("pieces_cols", 4)
-#             initial_state = get_default_pieces_state(pieces_rows, pieces_cols)
-            
-#             # Сохраняем игру в БД
-#             new_game = PuzzleGame(
-#                 user_id=user.id,
-#                 content_id=data["content_id"],
-#                 image_data=puzzle_data["image_url"],
-#                 width=puzzle_data["width"],
-#                 height=puzzle_data["height"],
-#                 pieces_rows=pieces_rows,
-#                 pieces_cols=pieces_cols,
-#                 difficulty=difficulty,
-#                 current_state=json.dumps(initial_state),
-#                 created_at=datetime.utcnow()
-#             )
-#             session.add(new_game)
-#             session.commit()
-#             session.refresh(new_game)
-            
-#             logger.info(f"Created new puzzle game {new_game.id} for user {vk_user_id}")
-            
-#             return {
-#                 "game_id": new_game.id,
-#                 "content_id": new_game.content_id,
-#                 "image_url": puzzle_data["image_url"],
-#                 "width": puzzle_data["width"],
-#                 "height": puzzle_data["height"],
-#                 "pieces_rows": pieces_rows,
-#                 "pieces_cols": pieces_cols,
-#                 "difficulty": difficulty
-#             }
-            
-#     except (httpx.TimeoutException, httpx.HTTPStatusError, Exception) as e:
-#         logger.warning(f"AI service unavailable, using fallback puzzle: {e}")
-        
-#         # Берём fallback-данные для указанной сложности
-#         fallback = FALLBACK_PUZZLES.get(difficulty, FALLBACK_PUZZLES["medium"])
-#         content_id = f"fallback_{difficulty}_{datetime.utcnow().timestamp()}"
-        
-#         pieces_rows = fallback["pieces_rows"]
-#         pieces_cols = fallback["pieces_cols"]
-#         initial_state = get_default_pieces_state(pieces_rows, pieces_cols)
-        
-#         # Сохраняем fallback-игру
-#         new_game = PuzzleGame(
-#             user_id=user.id,
-#             content_id=content_id,
-#             image_data=fallback["image_url"],
-#             width=fallback["width"],
-#             height=fallback["height"],
-#             pieces_rows=pieces_rows,
-#             pieces_cols=pieces_cols,
-#             difficulty=difficulty,
-#             current_state=json.dumps(initial_state),
-#             created_at=datetime.utcnow()
-#         )
-#         session.add(new_game)
-#         session.commit()
-#         session.refresh(new_game)
-        
-#         logger.info(f"Created fallback puzzle game {new_game.id} for user {vk_user_id}")
-        
-#         return {
-#             "game_id": new_game.id,
-#             "content_id": content_id,
-#             "image_url": fallback["image_url"],
-#             "width": fallback["width"],
-#             "height": fallback["height"],
-#             "pieces_rows": pieces_rows,
-#             "pieces_cols": pieces_cols,
-#             "difficulty": difficulty,
-#             "fallback": True
-#         }
 
 @router.post("/puzzle/new")
 async def new_puzzle_game(
     vk_user_id: str,
     difficulty: str = "medium",
-    category: Optional[str] = None,      # ← НОВЫЙ ПАРАМЕТР: категория темы (например "Аниме")
-    theme_id: Optional[int] = None,      # ← НОВЫЙ ПАРАМЕТР: ID конкретной темы
+    category: Optional[str] = None,      # ← только категория для пользователя
     session: Session = Depends(get_session)
 ):
     """
@@ -231,7 +126,7 @@ async def new_puzzle_game(
     
     Параметры:
     - category: категория темы ("Аниме", "Природа", "Космос" и т.д.)
-    - theme_id: ID конкретной темы из базы данных
+                Если не указана — выбирается случайная тема из любой категории.
     """
     user = await get_or_create_user(vk_user_id, session)
     
@@ -241,13 +136,10 @@ async def new_puzzle_game(
         "difficulty": difficulty
     }
     
-    # Добавляем category или theme_id, если они переданы
+    # Добавляем category, если она передана
     if category:
         request_body["category"] = category
         logger.info(f"Generating puzzle with category: {category}")
-    elif theme_id:
-        request_body["theme_id"] = theme_id
-        logger.info(f"Generating puzzle with theme_id: {theme_id}")
     else:
         logger.info("Generating puzzle with random theme")
     
@@ -287,7 +179,7 @@ async def new_puzzle_game(
             
             logger.info(f"Created new puzzle game {new_game.id} for user {vk_user_id}")
             
-            # Формируем ответ с дополнительной информацией
+            # Формируем ответ
             response_data = {
                 "game_id": new_game.id,
                 "content_id": new_game.content_id,
@@ -299,11 +191,9 @@ async def new_puzzle_game(
                 "difficulty": difficulty
             }
             
-            # Добавляем информацию о категории/теме, если они были использованы
+            # Добавляем информацию о категории, если она была использована
             if "category" in puzzle_data:
                 response_data["category"] = puzzle_data["category"]
-            if "used_prompt" in puzzle_data:
-                response_data["used_prompt"] = puzzle_data["used_prompt"]
             
             return response_data
             
