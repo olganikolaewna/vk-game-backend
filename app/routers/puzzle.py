@@ -198,47 +198,12 @@ async def new_puzzle_game(
             
             return response_data
             
-    except (httpx.TimeoutException, httpx.HTTPStatusError, Exception) as e:
-        logger.warning(f"AI service unavailable, using fallback puzzle: {e}")
-        
-        # Берём fallback-данные для указанной сложности
-        fallback = FALLBACK_PUZZLES.get(difficulty, FALLBACK_PUZZLES["medium"])
-        content_id = f"fallback_{difficulty}_{datetime.utcnow().timestamp()}"
-        
-        pieces_rows = fallback["pieces_rows"]
-        pieces_cols = fallback["pieces_cols"]
-        initial_state = get_default_pieces_state(pieces_rows, pieces_cols)
-        
-        # Сохраняем fallback-игру
-        new_game = PuzzleGame(
-            user_id=user.id,
-            content_id=content_id,
-            image_data=fallback["image_url"],
-            width=fallback["width"],
-            height=fallback["height"],
-            pieces_rows=pieces_rows,
-            pieces_cols=pieces_cols,
-            difficulty=difficulty,
-            current_state=json.dumps(initial_state),
-            created_at=datetime.utcnow()
+    except Exception as e:
+        logger.error(f"AI service error: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail=f"AI service unavailable: {str(e)}"
         )
-        session.add(new_game)
-        session.commit()
-        session.refresh(new_game)
-        
-        logger.info(f"Created fallback puzzle game {new_game.id} for user {vk_user_id}")
-        
-        return {
-            "game_id": new_game.id,
-            "content_id": content_id,
-            "image_url": fallback["image_url"],
-            "width": fallback["width"],
-            "height": fallback["height"],
-            "pieces_rows": pieces_rows,
-            "pieces_cols": pieces_cols,
-            "difficulty": difficulty,
-            "fallback": True
-        }
 
 # ============================================
 # ПРОКСИ-ЭНДПОИНТЫ ДЛЯ РАБОТЫ С ТЕМАМИ (перенаправление к ИИ-сервису)
