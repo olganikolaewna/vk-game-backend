@@ -133,8 +133,7 @@ async def new_puzzle_game(
     # Формируем тело запроса к ИИ-сервису
     request_body = {
         "game_type": "puzzle",
-        "difficulty": difficulty,
-        "player_skill": user.skill_level
+        "difficulty": difficulty
     }
     
     # Добавляем category, если она передана
